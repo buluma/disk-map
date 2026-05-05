@@ -490,12 +490,13 @@ fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
     paths.sort();
     paths.dedup();
 
-    let mut volumes = Vec::new();
+    let mut by_mount_path: HashMap<String, VolumeInfo> = HashMap::new();
     for path in paths {
         if let Some(volume) = volume_info_for_path(&path) {
-            volumes.push(volume);
+            by_mount_path.entry(volume.path.clone()).or_insert(volume);
         }
     }
+    let mut volumes = by_mount_path.into_values().collect::<Vec<_>>();
     volumes.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(volumes)
 }
