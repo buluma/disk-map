@@ -13,6 +13,7 @@ import {
 
 type ScanResult = {
   root: DiskNode;
+  largestFiles: LargestFile[];
   nodes: number;
   files: number;
   dirs: number;
@@ -20,6 +21,13 @@ type ScanResult = {
   permissionDenied: number;
   errors: number;
   elapsedMs: number;
+};
+
+type LargestFile = {
+  name: string;
+  path: string;
+  size: number;
+  parentPath: string;
 };
 
 type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
@@ -156,6 +164,47 @@ function TopLargest({
               </span>
             )}
             <span className="size">{formatBytes(item.size)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function GlobalLargestFiles({
+  files,
+  onFocusDirectory,
+  limit = 20,
+}: {
+  files: LargestFile[];
+  onFocusDirectory: (path: string) => void;
+  limit?: number;
+}) {
+  let topFiles = files.slice(0, limit);
+  if (!topFiles.length) return null;
+
+  return (
+    <section className="summary">
+      <div className="summary-head">
+        <h2>Largest Files (Global)</h2>
+        <span>Top {topFiles.length}</span>
+      </div>
+      <div className="summary-list">
+        {topFiles.map((file) => (
+          <div className="summary-row" key={file.path}>
+            <span className="type-pill file">FILE</span>
+            <span className="summary-name" title={file.path}>
+              {file.name}
+            </span>
+            <button
+              className="summary-folder-link"
+              onClick={() => onFocusDirectory(file.parentPath)}
+              title={file.parentPath}
+              disabled={!file.parentPath}
+            >
+              Open folder
+            </button>
+            <span className="size">{formatBytes(file.size)}</span>
           </div>
         ))}
       </div>
@@ -581,6 +630,10 @@ export default function App() {
       {filteredTree && (
         <>
           <SunburstMap root={filteredTree} onFocusDirectory={onFocusDirectory} />
+          <GlobalLargestFiles
+            files={scanResult?.largestFiles ?? []}
+            onFocusDirectory={onFocusDirectory}
+          />
           <TopLargest root={filteredTree} onFocusDirectory={onFocusDirectory} />
           <section className="results">
             <NodeView

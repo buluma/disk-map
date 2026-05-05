@@ -280,6 +280,20 @@ button:disabled {
   font-weight: 500;
 }
 
+.summary-folder-link {
+  border: 1px solid #25345a;
+  background: #111b31;
+  color: #c8d3f4;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.summary-folder-link:hover {
+  border-color: #4b73ff;
+}
+
 .summary-link:hover {
   text-decoration: underline;
 }

@@ -21,6 +21,7 @@ struct DiskNode {
 #[serde(rename_all = "camelCase")]
 struct ScanResult {
     root: DiskNode,
+    largest_files: Vec<LargestFile>,
     nodes: usize,
     files: usize,
     dirs: usize,
@@ -28,6 +29,15 @@ struct ScanResult {
     permission_denied: usize,
     errors: usize,
     elapsed_ms: u128,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LargestFile {
+    name: String,
+    path: String,
+    size: u64,
+    parent_path: String,
 }
 
 struct AppState {
@@ -100,6 +110,8 @@ fn scan_path(
     path: &Path,
     excludes: &[String],
     stats: &mut ScanStats,
+    largest_files: &mut Vec<LargestFile>,
+    largest_limit: usize,
     progress: &mut ProgressState,
     app_handle: Option<&tauri::AppHandle>,
     client_scan_id: u64,
@@ -138,6 +150,20 @@ fn scan_path(
                 );
             }
         }
+        let parent_path = path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(String::new);
+        maybe_add_largest_file(
+            largest_files,
+            largest_limit,
+            LargestFile {
+                name: name.clone(),
+                path: path.to_string_lossy().to_string(),
+                size: metadata.len(),
+                parent_path,
+            },
+        );
         return Ok(DiskNode {
             name,
             path: path.to_string_lossy().to_string(),
@@ -180,6 +206,8 @@ fn scan_path(
                         &child_path,
                         excludes,
                         stats,
+                        largest_files,
+                        largest_limit,
                         progress,
                         app_handle,
                         client_scan_id,
@@ -209,6 +237,26 @@ fn scan_path(
         is_dir: true,
         children,
     })
+}
+
+fn maybe_add_largest_file(files: &mut Vec<LargestFile>, limit: usize, candidate: LargestFile) {
+    if limit == 0 {
+        return;
+    }
+    if files.len() < limit {
+        files.push(candidate);
+        return;
+    }
+    if let Some((smallest_index, smallest_size)) = files
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (idx, item.size))
+        .min_by_key(|(_, size)| *size)
+    {
+        if candidate.size > smallest_size {
+            files[smallest_index] = candidate;
+        }
+    }
 }
 
 fn prune_for_display(node: &DiskNode, depth: usize, max_display_depth: usize) -> DiskNode {
@@ -247,6 +295,7 @@ async fn scan_directory(
     state: State<'_, AppState>,
 ) -> Result<ScanResult, String> {
     let display_depth = max_display_depth.unwrap_or(4).min(12);
+    let largest_limit = 100usize;
     let exclude_patterns: Vec<String> = excludes
         .unwrap_or_default()
         .into_iter()
@@ -259,14 +308,17 @@ async fn scan_directory(
     let latest_scan_id = Arc::clone(&state.latest_scan_id);
     let app_handle_for_scan = app_handle.clone();
 
-    let (full_root, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
+    let (full_root, mut largest_files, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
         let mut stats = ScanStats::default();
+        let mut largest_files = Vec::<LargestFile>::with_capacity(largest_limit);
         let mut progress = ProgressState::default();
         let full_root = scan_path(
             Path::new(&root_path),
             &exclude_patterns,
             &mut stats,
+            &mut largest_files,
+            largest_limit,
             &mut progress,
             Some(&app_handle_for_scan),
             client_scan_id,
@@ -289,13 +341,21 @@ async fn scan_directory(
             },
         );
         let elapsed_ms = started.elapsed().as_millis();
-        Ok::<(DiskNode, ScanStats, u128), String>((full_root, stats, elapsed_ms))
+        Ok::<(DiskNode, Vec<LargestFile>, ScanStats, u128), String>((
+            full_root,
+            largest_files,
+            stats,
+            elapsed_ms,
+        ))
     })
     .await
     .map_err(|e| e.to_string())??;
 
+    largest_files.sort_by(|a, b| b.size.cmp(&a.size));
+
     Ok(ScanResult {
         root: prune_for_display(&full_root, 0, display_depth),
+        largest_files,
         nodes: stats.nodes,
         files: stats.files,
         dirs: stats.dirs,
@@ -351,6 +411,8 @@ mod tests {
             &root,
             &[],
             &mut stats,
+            &mut Vec::new(),
+            50,
             &mut progress,
             None,
             1,
@@ -380,6 +442,8 @@ mod tests {
             &root,
             &[],
             &mut stats,
+            &mut Vec::new(),
+            50,
             &mut progress,
             None,
             1,
@@ -407,6 +471,8 @@ mod tests {
             &root,
             &[],
             &mut stats,
+            &mut Vec::new(),
+            50,
             &mut progress,
             None,
             1,
@@ -442,6 +508,8 @@ mod tests {
             &root,
             &[],
             &mut stats,
+            &mut Vec::new(),
+            50,
             &mut progress,
             None,
             1,
@@ -478,6 +546,8 @@ mod tests {
             &root,
             &[],
             &mut stats,
+            &mut Vec::new(),
+            50,
             &mut progress,
             None,
             1,
@@ -505,6 +575,8 @@ mod tests {
             &root,
             &[String::from("node_modules")],
             &mut stats,
+            &mut Vec::new(),
+            50,
             &mut progress,
             None,
             1,
