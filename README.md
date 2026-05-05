@@ -72,7 +72,7 @@ It scans a directory and returns a recursive tree of file/folder sizes, then ren
 
 ## Prerequisites
 
-- Node.js 18+ (or newer LTS)
+- Node.js 20.19+ (or newer LTS)
 - Rust toolchain (`rustup`)
 - Tauri platform dependencies for macOS
 
