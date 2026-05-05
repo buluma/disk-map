@@ -38,6 +38,12 @@ h1 {
   color: #a0acc8;
 }
 
+.scan-status {
+  margin: -8px 0 20px;
+  color: #b3c0df;
+  font-size: 13px;
+}
+
 .scan-metrics {
   display: flex;
   flex-wrap: wrap;

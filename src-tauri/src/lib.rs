@@ -237,6 +237,11 @@ async fn scan_directory(
     })
 }
 
+#[tauri::command]
+fn cancel_scan(state: State<'_, AppState>) {
+    state.latest_scan_id.fetch_add(1, Ordering::Relaxed);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -244,7 +249,7 @@ pub fn run() {
         .manage(AppState {
             latest_scan_id: Arc::new(AtomicU64::new(0)),
         })
-        .invoke_handler(tauri::generate_handler![scan_directory])
+        .invoke_handler(tauri::generate_handler![scan_directory, cancel_scan])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

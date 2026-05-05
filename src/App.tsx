@@ -21,6 +21,8 @@ type ScanResult = {
   elapsedMs: number;
 };
 
+type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
+
 const STORAGE_KEYS = {
   path: "disk-map:path",
   maxDepth: "disk-map:max-depth",
@@ -149,6 +151,7 @@ export default function App() {
   let [focusedPath, setFocusedPath] = useState<string | null>(null);
   let [loading, setLoading] = useState(false);
   let [error, setError] = useState("");
+  let [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -200,10 +203,12 @@ export default function App() {
   }, [excludeInput]);
 
   async function scan() {
+    if (loading) return;
+
     setLoading(true);
     setError("");
-    setScanResult(null);
     setFocusedPath(null);
+    setScanStatus("scanning");
 
     try {
       let result = await invoke<ScanResult>("scan_directory", {
@@ -212,11 +217,24 @@ export default function App() {
         excludes: parseExcludePatterns(excludeInput),
       });
       setScanResult(result);
+      setScanStatus("success");
     } catch (err) {
-      setError(String(err));
+      let message = String(err);
+      if (message.includes("Scan canceled")) {
+        setScanStatus("canceled");
+      } else {
+        setError(message);
+        setScanStatus("error");
+      }
     }
 
     setLoading(false);
+  }
+
+  async function cancelScan() {
+    if (!loading) return;
+    await invoke("cancel_scan");
+    setScanStatus("canceled");
   }
 
   async function chooseFolder() {
@@ -266,10 +284,22 @@ export default function App() {
         <button onClick={chooseFolder} disabled={loading}>
           Choose Folder
         </button>
+        <button onClick={cancelScan} disabled={!loading}>
+          Cancel
+        </button>
         <button onClick={scan} disabled={loading}>
           {loading ? "Scanning..." : "Scan"}
         </button>
       </div>
+
+      <p className="scan-status">
+        Status:{" "}
+        {scanStatus === "idle" && "Idle"}
+        {scanStatus === "scanning" && "Scanning"}
+        {scanStatus === "success" && "Completed"}
+        {scanStatus === "canceled" && "Canceled"}
+        {scanStatus === "error" && "Error"}
+      </p>
 
       <div className="toolbar">
         <input
