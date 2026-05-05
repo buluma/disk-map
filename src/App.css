@@ -181,6 +181,20 @@ button:disabled {
   flex: 1;
 }
 
+.summary-link {
+  flex: 1;
+  text-align: left;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #d7e2ff;
+  font-weight: 500;
+}
+
+.summary-link:hover {
+  text-decoration: underline;
+}
+
 .node-row {
   display: flex;
   align-items: center;

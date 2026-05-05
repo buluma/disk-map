@@ -111,9 +111,11 @@ function NodeView({
 function TopLargest({
   root,
   limit = 8,
+  onFocusDirectory,
 }: {
   root: DiskNode;
   limit?: number;
+  onFocusDirectory: (path: string) => void;
 }) {
   let largest = [...root.children].sort((a, b) => b.size - a.size).slice(0, limit);
 
@@ -131,9 +133,19 @@ function TopLargest({
             <span className={`type-pill ${item.is_dir ? "dir" : "file"}`}>
               {item.is_dir ? "DIR" : "FILE"}
             </span>
-            <span className="summary-name" title={item.path}>
-              {item.name}
-            </span>
+            {item.is_dir ? (
+              <button
+                className="summary-link"
+                onClick={() => onFocusDirectory(item.path)}
+                title={item.path}
+              >
+                {item.name}
+              </button>
+            ) : (
+              <span className="summary-name" title={item.path}>
+                {item.name}
+              </span>
+            )}
             <span className="size">{formatBytes(item.size)}</span>
           </div>
         ))}
@@ -352,7 +364,7 @@ export default function App() {
 
       {filteredTree && (
         <>
-          <TopLargest root={filteredTree} />
+          <TopLargest root={filteredTree} onFocusDirectory={onFocusDirectory} />
           <section className="results">
             <NodeView
               node={filteredTree}

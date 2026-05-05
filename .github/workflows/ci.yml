@@ -23,6 +23,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+
       - name: Install Linux system dependencies for Tauri
         run: |
           sudo apt-get update
