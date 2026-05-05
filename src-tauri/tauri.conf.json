@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "disk-map",
-        "width": 800,
-        "height": 600
+        "width": 1100,
+        "height": 800
       }
     ],
     "security": {

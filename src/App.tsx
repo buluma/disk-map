@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 import {
   clampDepth,
@@ -12,12 +13,45 @@ import {
 
 type ScanResult = {
   root: DiskNode;
+  largestFiles: LargestFile[];
+  fileTypes: FileTypeStat[];
   nodes: number;
   files: number;
   dirs: number;
   skipped: number;
   permissionDenied: number;
   errors: number;
+  elapsedMs: number;
+};
+
+type LargestFile = {
+  name: string;
+  path: string;
+  size: number;
+  parentPath: string;
+};
+
+type FileTypeStat = {
+  kind: string;
+  bytes: number;
+  files: number;
+};
+
+type VolumeInfo = {
+  name: string;
+  path: string;
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+};
+
+type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
+
+type ScanProgress = {
+  clientScanId: number;
+  entriesScanned: number;
+  dirsScanned: number;
+  bytesAccumulated: number;
   elapsedMs: number;
 };
 
@@ -56,11 +90,17 @@ function NodeView({
   level = 0,
   filterQuery,
   onFocusDirectory,
+  onReveal,
+  onOpen,
+  onTrash,
 }: {
   node: DiskNode;
   level?: number;
   filterQuery: string;
   onFocusDirectory: (path: string) => void;
+  onReveal: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<void>;
+  onTrash: (path: string) => Promise<void>;
 }) {
   let [open, setOpen] = useState(level < 1);
   let hasChildren = node.children.length > 0;
@@ -90,6 +130,15 @@ function NodeView({
           </span>
         )}
         <span className="size">{formatBytes(node.size)}</span>
+        <button className="action-btn" onClick={() => onReveal(node.path)} title={`Reveal ${node.path}`}>
+          Reveal
+        </button>
+        <button className="action-btn" onClick={() => onOpen(node.path)} title={`Open ${node.path}`}>
+          Open
+        </button>
+        <button className="action-btn danger" onClick={() => onTrash(node.path)} title={`Move ${node.path} to Trash`}>
+          Trash
+        </button>
       </div>
 
       {open &&
@@ -100,6 +149,9 @@ function NodeView({
             level={level + 1}
             filterQuery={filterQuery}
             onFocusDirectory={onFocusDirectory}
+            onReveal={onReveal}
+            onOpen={onOpen}
+            onTrash={onTrash}
           />
         ))}
     </div>
@@ -109,11 +161,20 @@ function NodeView({
 function TopLargest({
   root,
   limit = 8,
+  onFocusDirectory,
+  onReveal,
+  onOpen,
+  onTrash,
 }: {
   root: DiskNode;
   limit?: number;
+  onFocusDirectory: (path: string) => void;
+  onReveal: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<void>;
+  onTrash: (path: string) => Promise<void>;
 }) {
   let largest = [...root.children].sort((a, b) => b.size - a.size).slice(0, limit);
+  let [open, setOpen] = useState(true);
 
   if (largest.length === 0) return null;
 
@@ -121,20 +182,301 @@ function TopLargest({
     <section className="summary">
       <div className="summary-head">
         <h2>Largest items in {root.name}</h2>
-        <span>Top {largest.length}</span>
+        <button className="collapse-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? "Collapse" : `Expand (${largest.length})`}
+        </button>
       </div>
-      <div className="summary-list">
-        {largest.map((item) => (
-          <div className="summary-row" key={item.path}>
-            <span className={`type-pill ${item.is_dir ? "dir" : "file"}`}>
-              {item.is_dir ? "DIR" : "FILE"}
-            </span>
-            <span className="summary-name" title={item.path}>
-              {item.name}
-            </span>
-            <span className="size">{formatBytes(item.size)}</span>
-          </div>
-        ))}
+      {open && (
+        <div className="summary-list">
+          {largest.map((item) => (
+            <div className="summary-row" key={item.path}>
+              <span className={`type-pill ${item.is_dir ? "dir" : "file"}`}>
+                {item.is_dir ? "DIR" : "FILE"}
+              </span>
+              {item.is_dir ? (
+                <button
+                  className="summary-link"
+                  onClick={() => onFocusDirectory(item.path)}
+                  title={item.path}
+                >
+                  {item.name}
+                </button>
+              ) : (
+                <span className="summary-name" title={item.path}>
+                  {item.name}
+                </span>
+              )}
+              <span className="size">{formatBytes(item.size)}</span>
+              <button className="action-btn" onClick={() => onReveal(item.path)} title={`Reveal ${item.path}`}>
+                Reveal
+              </button>
+              <button className="action-btn" onClick={() => onOpen(item.path)} title={`Open ${item.path}`}>
+                Open
+              </button>
+              <button className="action-btn danger" onClick={() => onTrash(item.path)} title={`Move ${item.path} to Trash`}>
+                Trash
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GlobalLargestFiles({
+  files,
+  onFocusDirectory,
+  onReveal,
+  onOpen,
+  onTrash,
+  limit = 20,
+}: {
+  files: LargestFile[];
+  onFocusDirectory: (path: string) => void;
+  onReveal: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<void>;
+  onTrash: (path: string) => Promise<void>;
+  limit?: number;
+}) {
+  let topFiles = files.slice(0, limit);
+  let [open, setOpen] = useState(false);
+  if (!topFiles.length) return null;
+
+  return (
+    <section className="summary">
+      <div className="summary-head">
+        <h2>Largest Files (Global)</h2>
+        <button className="collapse-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? "Collapse" : `Expand (${topFiles.length})`}
+        </button>
+      </div>
+      {open && (
+        <div className="summary-list">
+          {topFiles.map((file) => (
+            <div className="summary-row" key={file.path}>
+              <span className="type-pill file">FILE</span>
+              <span className="summary-name" title={file.path}>
+                {file.name}
+              </span>
+              <button
+                className="summary-folder-link"
+                onClick={() => onFocusDirectory(file.parentPath)}
+                title={file.parentPath}
+                disabled={!file.parentPath}
+              >
+                Open folder
+              </button>
+              <span className="size">{formatBytes(file.size)}</span>
+              <button className="action-btn" onClick={() => onReveal(file.path)} title={`Reveal ${file.path}`}>
+                Reveal
+              </button>
+              <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
+                Open
+              </button>
+              <button className="action-btn danger" onClick={() => onTrash(file.path)} title={`Move ${file.path} to Trash`}>
+                Trash
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FileTypeBreakdown({ fileTypes, limit = 12 }: { fileTypes: FileTypeStat[]; limit?: number }) {
+  let top = fileTypes.slice(0, limit);
+  let [open, setOpen] = useState(true);
+  if (!top.length) return null;
+
+  return (
+    <section className="summary">
+      <div className="summary-head">
+        <h2>Top File Types</h2>
+        <button className="collapse-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? "Collapse" : `Expand (${top.length})`}
+        </button>
+      </div>
+      {open && (
+        <div className="summary-list">
+          {top.map((entry) => (
+            <div className="summary-row" key={entry.kind}>
+              <span className="type-pill file">{entry.kind}</span>
+              <span className="summary-name">{entry.files} files</span>
+              <span className="size">{formatBytes(entry.bytes)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+type SunburstSegment = {
+  node: DiskNode;
+  depth: number;
+  startAngle: number;
+  endAngle: number;
+  parentSize: number;
+};
+
+function polarToCartesian(cx: number, cy: number, radius: number, angle: number) {
+  return {
+    x: cx + radius * Math.cos(angle),
+    y: cy + radius * Math.sin(angle),
+  };
+}
+
+function ringSegmentPath(
+  cx: number,
+  cy: number,
+  innerRadius: number,
+  outerRadius: number,
+  startAngle: number,
+  endAngle: number,
+) {
+  let startOuter = polarToCartesian(cx, cy, outerRadius, startAngle);
+  let endOuter = polarToCartesian(cx, cy, outerRadius, endAngle);
+  let startInner = polarToCartesian(cx, cy, innerRadius, endAngle);
+  let endInner = polarToCartesian(cx, cy, innerRadius, startAngle);
+  let largeArcFlag = endAngle - startAngle > Math.PI ? 1 : 0;
+
+  return [
+    `M ${startOuter.x} ${startOuter.y}`,
+    `A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${endOuter.x} ${endOuter.y}`,
+    `L ${startInner.x} ${startInner.y}`,
+    `A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${endInner.x} ${endInner.y}`,
+    "Z",
+  ].join(" ");
+}
+
+function buildSunburstSegments(
+  root: DiskNode,
+  maxDepth: number,
+  minSize: number,
+): SunburstSegment[] {
+  let segments: SunburstSegment[] = [];
+
+  function walk(node: DiskNode, depth: number, startAngle: number, endAngle: number, parentSize: number) {
+    if (depth > maxDepth || !node.children.length || node.size <= 0) {
+      return;
+    }
+
+    let currentAngle = startAngle;
+    for (let child of node.children) {
+      if (child.size < minSize) continue;
+      let angleSpan = (endAngle - startAngle) * (child.size / node.size);
+      let childStart = currentAngle;
+      let childEnd = currentAngle + angleSpan;
+      currentAngle = childEnd;
+
+      if (childEnd - childStart < 0.002) continue;
+
+      segments.push({
+        node: child,
+        depth,
+        startAngle: childStart,
+        endAngle: childEnd,
+        parentSize,
+      });
+
+      walk(child, depth + 1, childStart, childEnd, child.size);
+    }
+  }
+
+  walk(root, 1, -Math.PI / 2, Math.PI * 1.5, root.size);
+  return segments;
+}
+
+function segmentColor(depth: number, index: number) {
+  let hue = (index * 37 + depth * 29) % 360;
+  let saturation = 60 - Math.min(depth * 4, 20);
+  let lightness = 50 - Math.min(depth * 3, 14);
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
+}
+
+function removeNodeByPath(node: DiskNode, targetPath: string): DiskNode {
+  let nextChildren = node.children
+    .filter((child) => child.path !== targetPath)
+    .map((child) => removeNodeByPath(child, targetPath));
+  let nextSize = node.is_dir ? nextChildren.reduce((sum, child) => sum + child.size, 0) : node.size;
+  return {
+    ...node,
+    size: nextSize,
+    children: nextChildren,
+  };
+}
+
+function SunburstMap({
+  root,
+  onFocusDirectory,
+}: {
+  root: DiskNode;
+  onFocusDirectory: (path: string) => void;
+}) {
+  let [hovered, setHovered] = useState<SunburstSegment | null>(null);
+  let size = 560;
+  let cx = size / 2;
+  let cy = size / 2;
+  let ring = 38;
+  let core = 56;
+  let segments = buildSunburstSegments(root, 7, Math.max(root.size * 0.001, 1));
+
+  return (
+    <section className="sunburst-card">
+      <div className="summary-head">
+        <h2>Disk Map</h2>
+        <span>Click a directory segment to focus</span>
+      </div>
+      <div className="sunburst-wrap">
+        <svg viewBox={`0 0 ${size} ${size}`} className="sunburst" role="img" aria-label="Disk usage sunburst">
+          <circle cx={cx} cy={cy} r={core - 10} fill="#0f1626" stroke="#243253" strokeWidth="1" />
+          <text x={cx} y={cy - 6} textAnchor="middle" className="sunburst-label-main">
+            {root.name || "/"}
+          </text>
+          <text x={cx} y={cy + 14} textAnchor="middle" className="sunburst-label-sub">
+            {formatBytes(root.size)}
+          </text>
+          {segments.map((segment, index) => {
+            let inner = core + (segment.depth - 1) * ring;
+            let outer = inner + ring - 2;
+            let path = ringSegmentPath(
+              cx,
+              cy,
+              inner,
+              outer,
+              segment.startAngle,
+              segment.endAngle,
+            );
+            let clickable = segment.node.is_dir;
+            return (
+              <path
+                key={`${segment.node.path}-${index}`}
+                d={path}
+                fill={segmentColor(segment.depth, index)}
+                className={`sunburst-segment ${clickable ? "clickable" : ""}`}
+                onMouseEnter={() => setHovered(segment)}
+                onMouseLeave={() => setHovered(null)}
+                onClick={() => {
+                  if (clickable) onFocusDirectory(segment.node.path);
+                }}
+              />
+            );
+          })}
+        </svg>
+        <div className="sunburst-tooltip">
+          {hovered ? (
+            <>
+              <div className="tooltip-title">{hovered.node.name}</div>
+              <div>{formatBytes(hovered.node.size)}</div>
+              <div>{((hovered.node.size / root.size) * 100).toFixed(2)}% of total</div>
+              <div>{((hovered.node.size / hovered.parentSize) * 100).toFixed(2)}% of parent</div>
+            </>
+          ) : (
+            <div>Hover segments for details</div>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -149,6 +491,12 @@ export default function App() {
   let [focusedPath, setFocusedPath] = useState<string | null>(null);
   let [loading, setLoading] = useState(false);
   let [error, setError] = useState("");
+  let [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
+  let [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+  let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
+  let [volumes, setVolumes] = useState<VolumeInfo[]>([]);
+  let [volumesOpen, setVolumesOpen] = useState(false);
+  let [treeOpen, setTreeOpen] = useState(true);
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -184,6 +532,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let mounted = true;
+    invoke<VolumeInfo[]>("list_volumes")
+      .then((result) => {
+        if (mounted) {
+          setVolumes(result);
+        }
+      })
+      .catch((err) => {
+        if (mounted) {
+          setError(String(err));
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.path, path);
   }, [path]);
 
@@ -199,24 +565,74 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS.excludes, excludeInput);
   }, [excludeInput]);
 
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    listen<ScanProgress>("scan-progress", (event) => {
+      let progress = event.payload;
+      setScanProgress((prev) => {
+        if (activeClientScanId === null) return prev;
+        if (progress.clientScanId !== activeClientScanId) return prev;
+        return progress;
+      });
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        setError(String(err));
+      });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [activeClientScanId]);
+
   async function scan() {
+    if (loading) return;
+
+    let clientScanId = Date.now();
     setLoading(true);
     setError("");
-    setScanResult(null);
     setFocusedPath(null);
+    setScanStatus("scanning");
+    setActiveClientScanId(clientScanId);
+    setScanProgress({
+      clientScanId,
+      entriesScanned: 0,
+      dirsScanned: 0,
+      bytesAccumulated: 0,
+      elapsedMs: 0,
+    });
 
     try {
       let result = await invoke<ScanResult>("scan_directory", {
         path,
         maxDisplayDepth,
         excludes: parseExcludePatterns(excludeInput),
+        clientScanId,
       });
       setScanResult(result);
+      setScanStatus("success");
     } catch (err) {
-      setError(String(err));
+      let message = String(err);
+      if (message.includes("Scan canceled")) {
+        setScanStatus("canceled");
+      } else {
+        setError(message);
+        setScanStatus("error");
+      }
     }
 
+    setActiveClientScanId(null);
     setLoading(false);
+  }
+
+  async function cancelScan() {
+    if (!loading) return;
+    await invoke("cancel_scan");
+    setScanStatus("canceled");
   }
 
   async function chooseFolder() {
@@ -233,8 +649,54 @@ export default function App() {
     }
   }
 
+  async function refreshVolumes() {
+    try {
+      let result = await invoke<VolumeInfo[]>("list_volumes");
+      setVolumes(result);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   function onFocusDirectory(targetPath: string) {
     setFocusedPath(targetPath);
+  }
+
+  async function revealInFinder(targetPath: string) {
+    try {
+      await invoke("reveal_in_finder", { path: targetPath });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function openPath(targetPath: string) {
+    try {
+      await invoke("open_path", { path: targetPath });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function moveToTrash(targetPath: string) {
+    let ok = window.confirm(`Move this item to Trash?\n\n${targetPath}`);
+    if (!ok) return;
+    try {
+      await invoke("move_to_trash", { path: targetPath });
+      setScanResult((prev) => {
+        if (!prev || prev.root.path === targetPath) return prev;
+        return {
+          ...prev,
+          root: removeNodeByPath(prev.root, targetPath),
+          largestFiles: prev.largestFiles.filter((item) => item.path !== targetPath),
+        };
+      });
+      if (focusedPath === targetPath) {
+        setFocusedPath(null);
+      }
+    } catch (err) {
+      setError(String(err));
+    }
   }
 
   return (
@@ -243,6 +705,20 @@ export default function App() {
       <p className="subtitle">Recursive scanner with expandable tree view</p>
 
       <div className="toolbar">
+        <select
+          className="volume-select"
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          disabled={loading || volumes.length === 0}
+          title="Mounted volumes"
+        >
+          <option value={path}>Current path</option>
+          {volumes.map((volume) => (
+            <option key={volume.path} value={volume.path}>
+              {volume.name} ({volume.path})
+            </option>
+          ))}
+        </select>
         <input
           value={path}
           onChange={(e) => setPath(e.target.value)}
@@ -266,10 +742,25 @@ export default function App() {
         <button onClick={chooseFolder} disabled={loading}>
           Choose Folder
         </button>
+        <button onClick={refreshVolumes} disabled={loading}>
+          Refresh Volumes
+        </button>
+        <button onClick={cancelScan} disabled={!loading}>
+          Cancel
+        </button>
         <button onClick={scan} disabled={loading}>
           {loading ? "Scanning..." : "Scan"}
         </button>
       </div>
+
+      <p className="scan-status">
+        Status:{" "}
+        {scanStatus === "idle" && "Idle"}
+        {scanStatus === "scanning" && "Scanning"}
+        {scanStatus === "success" && "Completed"}
+        {scanStatus === "canceled" && "Canceled"}
+        {scanStatus === "error" && "Error"}
+      </p>
 
       <div className="toolbar">
         <input
@@ -319,22 +810,90 @@ export default function App() {
           <span>Elapsed: {scanResult.elapsedMs} ms</span>
         </section>
       )}
+      {scanProgress && (
+        <section className="scan-progress">
+          <div className="progress-head">
+            <strong>Live Scan Progress</strong>
+            <span>{scanProgress.elapsedMs} ms</span>
+          </div>
+          <div className="progress-grid">
+            <span>Entries: {scanProgress.entriesScanned}</span>
+            <span>Dirs: {scanProgress.dirsScanned}</span>
+            <span>Bytes: {formatBytes(scanProgress.bytesAccumulated)}</span>
+          </div>
+        </section>
+      )}
 
       {filteredTree && (
         <>
-          <TopLargest root={filteredTree} />
-          <section className="results">
-            <NodeView
-              node={filteredTree}
-              filterQuery={filterQuery}
-              onFocusDirectory={onFocusDirectory}
-            />
+          <SunburstMap root={filteredTree} onFocusDirectory={onFocusDirectory} />
+          <FileTypeBreakdown fileTypes={scanResult?.fileTypes ?? []} />
+          <TopLargest
+            root={filteredTree}
+            onFocusDirectory={onFocusDirectory}
+            onReveal={revealInFinder}
+            onOpen={openPath}
+            onTrash={moveToTrash}
+          />
+          <section className="summary">
+            <div className="summary-head">
+              <h2>Tree Results</h2>
+              <button className="collapse-btn" onClick={() => setTreeOpen((v) => !v)}>
+                {treeOpen ? "Collapse" : "Expand"}
+              </button>
+            </div>
+            {treeOpen && (
+              <section className="results">
+                <NodeView
+                  node={filteredTree}
+                  filterQuery={filterQuery}
+                  onFocusDirectory={onFocusDirectory}
+                  onReveal={revealInFinder}
+                  onOpen={openPath}
+                  onTrash={moveToTrash}
+                />
+              </section>
+            )}
           </section>
         </>
       )}
 
       {currentRoot && !filteredTree && (
         <p className="empty">No results for "{filterQuery}".</p>
+      )}
+
+      <GlobalLargestFiles
+        files={scanResult?.largestFiles ?? []}
+        onFocusDirectory={onFocusDirectory}
+        onReveal={revealInFinder}
+        onOpen={openPath}
+        onTrash={moveToTrash}
+      />
+
+      {volumes.length > 0 && (
+        <section className="summary">
+          <div className="summary-head">
+            <h2>Mounted Volumes</h2>
+            <button className="collapse-btn" onClick={() => setVolumesOpen((v) => !v)}>
+              {volumesOpen ? "Collapse" : `Expand (${volumes.length})`}
+            </button>
+          </div>
+          {volumesOpen && (
+            <div className="summary-list">
+              {volumes.map((volume) => (
+                <div className="summary-row" key={volume.path}>
+                  <span className="type-pill dir">VOL</span>
+                  <button className="summary-link" onClick={() => setPath(volume.path)} title={volume.path}>
+                    {volume.name}
+                  </button>
+                  <span className="size">Used: {formatBytes(volume.usedBytes)}</span>
+                  <span className="size">Free: {formatBytes(volume.availableBytes)}</span>
+                  <span className="size">Total: {formatBytes(volume.totalBytes)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
     </main>
   );
