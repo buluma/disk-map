@@ -57,6 +57,30 @@ h1 {
   font-size: 13px;
 }
 
+.scan-progress {
+  border: 1px solid #233156;
+  background: #0d1424;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #d9e4ff;
+  margin-bottom: 6px;
+}
+
+.progress-grid {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: #9eb0d7;
+  font-size: 13px;
+}
+
 .sunburst-card {
   border: 1px solid #222d46;
   border-radius: 14px;

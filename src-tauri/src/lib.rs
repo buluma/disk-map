@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tauri::Emitter;
 use tauri::State;
 
 #[derive(Clone, Serialize)]
@@ -31,6 +32,23 @@ struct ScanResult {
 
 struct AppState {
     latest_scan_id: Arc<AtomicU64>,
+}
+
+#[derive(Default)]
+struct ProgressState {
+    entries_scanned: usize,
+    dirs_scanned: usize,
+    bytes_accumulated: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ScanProgress {
+    client_scan_id: u64,
+    entries_scanned: usize,
+    dirs_scanned: usize,
+    bytes_accumulated: u64,
+    elapsed_ms: u128,
 }
 
 #[derive(Default)]
@@ -64,9 +82,9 @@ fn should_exclude(path: &Path, excludes: &[String]) -> bool {
         .unwrap_or_default();
     let full_path = path.to_string_lossy().to_string().to_lowercase();
 
-    excludes
-        .iter()
-        .any(|pattern| !pattern.is_empty() && (name.contains(pattern) || full_path.contains(pattern)))
+    excludes.iter().any(|pattern| {
+        !pattern.is_empty() && (name.contains(pattern) || full_path.contains(pattern))
+    })
 }
 
 fn record_skip(error_kind: Option<ErrorKind>, stats: &mut ScanStats) {
@@ -82,6 +100,10 @@ fn scan_path(
     path: &Path,
     excludes: &[String],
     stats: &mut ScanStats,
+    progress: &mut ProgressState,
+    app_handle: Option<&tauri::AppHandle>,
+    client_scan_id: u64,
+    started: Instant,
     latest_scan_id: &AtomicU64,
     scan_id: u64,
 ) -> Result<DiskNode, ScanError> {
@@ -100,6 +122,22 @@ fn scan_path(
     if metadata.is_file() || file_type.is_symlink() {
         stats.nodes += 1;
         stats.files += 1;
+        progress.entries_scanned += 1;
+        progress.bytes_accumulated += metadata.len();
+        if progress.entries_scanned % 250 == 0 {
+            if let Some(app_handle) = app_handle {
+                let _ = app_handle.emit(
+                    "scan-progress",
+                    ScanProgress {
+                        client_scan_id,
+                        entries_scanned: progress.entries_scanned,
+                        dirs_scanned: progress.dirs_scanned,
+                        bytes_accumulated: progress.bytes_accumulated,
+                        elapsed_ms: started.elapsed().as_millis(),
+                    },
+                );
+            }
+        }
         return Ok(DiskNode {
             name,
             path: path.to_string_lossy().to_string(),
@@ -113,6 +151,8 @@ fn scan_path(
     let mut total_size = 0;
     stats.nodes += 1;
     stats.dirs += 1;
+    progress.entries_scanned += 1;
+    progress.dirs_scanned += 1;
 
     if metadata.is_dir() {
         match fs::read_dir(path) {
@@ -136,7 +176,17 @@ fn scan_path(
                         continue;
                     }
 
-                    match scan_path(&child_path, excludes, stats, latest_scan_id, scan_id) {
+                    match scan_path(
+                        &child_path,
+                        excludes,
+                        stats,
+                        progress,
+                        app_handle,
+                        client_scan_id,
+                        started,
+                        latest_scan_id,
+                        scan_id,
+                    ) {
                         Ok(child) => {
                             total_size += child.size;
                             children.push(child);
@@ -192,6 +242,8 @@ async fn scan_directory(
     path: String,
     max_display_depth: Option<usize>,
     excludes: Option<Vec<String>>,
+    client_scan_id: Option<u64>,
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ScanResult, String> {
     let display_depth = max_display_depth.unwrap_or(4).min(12);
@@ -202,16 +254,23 @@ async fn scan_directory(
         .filter(|v| !v.is_empty())
         .collect();
     let scan_id = state.latest_scan_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let client_scan_id = client_scan_id.unwrap_or(scan_id);
     let root_path = path.clone();
     let latest_scan_id = Arc::clone(&state.latest_scan_id);
+    let app_handle_for_scan = app_handle.clone();
 
     let (full_root, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
         let mut stats = ScanStats::default();
+        let mut progress = ProgressState::default();
         let full_root = scan_path(
             Path::new(&root_path),
             &exclude_patterns,
             &mut stats,
+            &mut progress,
+            Some(&app_handle_for_scan),
+            client_scan_id,
+            started,
             &latest_scan_id,
             scan_id,
         )
@@ -219,6 +278,16 @@ async fn scan_directory(
             ScanError::Canceled => "Scan canceled by a newer request".to_string(),
             ScanError::Io(kind) => format!("Failed to scan root path ({kind:?})"),
         })?;
+        let _ = app_handle_for_scan.emit(
+            "scan-progress",
+            ScanProgress {
+                client_scan_id,
+                entries_scanned: progress.entries_scanned,
+                dirs_scanned: progress.dirs_scanned,
+                bytes_accumulated: progress.bytes_accumulated,
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        );
         let elapsed_ms = started.elapsed().as_millis();
         Ok::<(DiskNode, ScanStats, u128), String>((full_root, stats, elapsed_ms))
     })
@@ -277,7 +346,19 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let node = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
+        let mut progress = ProgressState::default();
+        let node = scan_path(
+            &root,
+            &[],
+            &mut stats,
+            &mut progress,
+            None,
+            1,
+            Instant::now(),
+            &latest,
+            1,
+        )
+        .expect("scan");
         assert_eq!(node.children.len(), 2);
         assert_eq!(node.children[0].name, "big.txt");
         assert_eq!(node.children[1].name, "small.txt");
@@ -294,7 +375,19 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let node = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
+        let mut progress = ProgressState::default();
+        let node = scan_path(
+            &root,
+            &[],
+            &mut stats,
+            &mut progress,
+            None,
+            1,
+            Instant::now(),
+            &latest,
+            1,
+        )
+        .expect("scan");
         assert!(node.size >= 20);
 
         let _ = fs::remove_dir_all(&root);
@@ -309,7 +402,19 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let full = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
+        let mut progress = ProgressState::default();
+        let full = scan_path(
+            &root,
+            &[],
+            &mut stats,
+            &mut progress,
+            None,
+            1,
+            Instant::now(),
+            &latest,
+            1,
+        )
+        .expect("scan");
         let pruned = prune_for_display(&full, 0, 1);
 
         assert_eq!(full.size, pruned.size);
@@ -332,7 +437,19 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let node = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
+        let mut progress = ProgressState::default();
+        let node = scan_path(
+            &root,
+            &[],
+            &mut stats,
+            &mut progress,
+            None,
+            1,
+            Instant::now(),
+            &latest,
+            1,
+        )
+        .expect("scan");
         let symlink_node = node
             .children
             .iter()
@@ -356,7 +473,18 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let result = scan_path(&root, &[], &mut stats, &latest, 1);
+        let mut progress = ProgressState::default();
+        let result = scan_path(
+            &root,
+            &[],
+            &mut stats,
+            &mut progress,
+            None,
+            1,
+            Instant::now(),
+            &latest,
+            1,
+        );
         assert!(result.is_ok());
 
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755)).expect("restore perms");
@@ -372,15 +500,23 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
+        let mut progress = ProgressState::default();
         let node = scan_path(
             &root,
             &[String::from("node_modules")],
             &mut stats,
+            &mut progress,
+            None,
+            1,
+            Instant::now(),
             &latest,
             1,
         )
         .expect("scan");
-        assert!(!node.children.iter().any(|child| child.name == "node_modules"));
+        assert!(!node
+            .children
+            .iter()
+            .any(|child| child.name == "node_modules"));
         assert!(stats.skipped >= 1);
 
         let _ = fs::remove_dir_all(&root);

@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 import {
   clampDepth,
@@ -22,6 +23,14 @@ type ScanResult = {
 };
 
 type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
+
+type ScanProgress = {
+  clientScanId: number;
+  entriesScanned: number;
+  dirsScanned: number;
+  bytesAccumulated: number;
+  elapsedMs: number;
+};
 
 const STORAGE_KEYS = {
   path: "disk-map:path",
@@ -321,6 +330,8 @@ export default function App() {
   let [loading, setLoading] = useState(false);
   let [error, setError] = useState("");
   let [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
+  let [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+  let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -371,19 +382,53 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS.excludes, excludeInput);
   }, [excludeInput]);
 
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    listen<ScanProgress>("scan-progress", (event) => {
+      let progress = event.payload;
+      setScanProgress((prev) => {
+        if (activeClientScanId === null) return prev;
+        if (progress.clientScanId !== activeClientScanId) return prev;
+        return progress;
+      });
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        setError(String(err));
+      });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [activeClientScanId]);
+
   async function scan() {
     if (loading) return;
 
+    let clientScanId = Date.now();
     setLoading(true);
     setError("");
     setFocusedPath(null);
     setScanStatus("scanning");
+    setActiveClientScanId(clientScanId);
+    setScanProgress({
+      clientScanId,
+      entriesScanned: 0,
+      dirsScanned: 0,
+      bytesAccumulated: 0,
+      elapsedMs: 0,
+    });
 
     try {
       let result = await invoke<ScanResult>("scan_directory", {
         path,
         maxDisplayDepth,
         excludes: parseExcludePatterns(excludeInput),
+        clientScanId,
       });
       setScanResult(result);
       setScanStatus("success");
@@ -397,6 +442,7 @@ export default function App() {
       }
     }
 
+    setActiveClientScanId(null);
     setLoading(false);
   }
 
@@ -516,6 +562,19 @@ export default function App() {
           <span>Permission denied: {scanResult.permissionDenied}</span>
           <span>Errors: {scanResult.errors}</span>
           <span>Elapsed: {scanResult.elapsedMs} ms</span>
+        </section>
+      )}
+      {scanProgress && (
+        <section className="scan-progress">
+          <div className="progress-head">
+            <strong>Live Scan Progress</strong>
+            <span>{scanProgress.elapsedMs} ms</span>
+          </div>
+          <div className="progress-grid">
+            <span>Entries: {scanProgress.entriesScanned}</span>
+            <span>Dirs: {scanProgress.dirsScanned}</span>
+            <span>Bytes: {formatBytes(scanProgress.bytesAccumulated)}</span>
+          </div>
         </section>
       )}
 
