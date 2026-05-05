@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import {
   clampDepth,
+  findPathToNode,
   filterTree,
   formatBytes,
   parseExcludePatterns,
@@ -11,10 +12,13 @@ import {
 
 type ScanResult = {
   root: DiskNode;
-  elapsed_ms: number;
-  total_nodes: number;
-  total_files: number;
-  total_dirs: number;
+  nodes: number;
+  files: number;
+  dirs: number;
+  skipped: number;
+  permissionDenied: number;
+  errors: number;
+  elapsedMs: number;
 };
 
 const STORAGE_KEYS = {
@@ -51,10 +55,12 @@ function NodeView({
   node,
   level = 0,
   filterQuery,
+  onFocusDirectory,
 }: {
   node: DiskNode;
   level?: number;
   filterQuery: string;
+  onFocusDirectory: (path: string) => void;
 }) {
   let [open, setOpen] = useState(level < 1);
   let hasChildren = node.children.length > 0;
@@ -74,9 +80,15 @@ function NodeView({
         <span className={`type-pill ${node.is_dir ? "dir" : "file"}`}>
           {node.is_dir ? "DIR" : "FILE"}
         </span>
-        <span className="name" title={node.path}>
-          {highlightMatch(node.name, filterQuery)}
-        </span>
+        {node.is_dir ? (
+          <button className="dir-link" onClick={() => onFocusDirectory(node.path)} title={node.path}>
+            {highlightMatch(node.name, filterQuery)}
+          </button>
+        ) : (
+          <span className="name" title={node.path}>
+            {highlightMatch(node.name, filterQuery)}
+          </span>
+        )}
         <span className="size">{formatBytes(node.size)}</span>
       </div>
 
@@ -87,6 +99,7 @@ function NodeView({
             node={child}
             level={level + 1}
             filterQuery={filterQuery}
+            onFocusDirectory={onFocusDirectory}
           />
         ))}
     </div>
@@ -130,13 +143,20 @@ function TopLargest({
 export default function App() {
   let [path, setPath] = useState("/Users");
   let [filterQuery, setFilterQuery] = useState("");
-  let [maxDepth, setMaxDepth] = useState(4);
+  let [maxDisplayDepth, setMaxDisplayDepth] = useState(4);
   let [excludeInput, setExcludeInput] = useState(".git,node_modules");
   let [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  let [focusedPath, setFocusedPath] = useState<string | null>(null);
   let [loading, setLoading] = useState(false);
   let [error, setError] = useState("");
-  let tree = scanResult?.root ?? null;
-  let filteredTree = tree ? filterTree(tree, filterQuery) : null;
+  let fullTree = scanResult?.root ?? null;
+  let focusChain = fullTree
+    ? focusedPath
+      ? findPathToNode(fullTree, focusedPath) ?? [fullTree]
+      : [fullTree]
+    : null;
+  let currentRoot = focusChain?.[focusChain.length - 1] ?? fullTree;
+  let filteredTree = currentRoot ? filterTree(currentRoot, filterQuery) : null;
 
   useEffect(() => {
     let storedPath = localStorage.getItem(STORAGE_KEYS.path);
@@ -144,11 +164,11 @@ export default function App() {
       setPath(storedPath);
     }
 
-    let storedMaxDepth = localStorage.getItem(STORAGE_KEYS.maxDepth);
-    if (storedMaxDepth) {
-      let parsed = Number(storedMaxDepth);
+    let storedMaxDisplayDepth = localStorage.getItem(STORAGE_KEYS.maxDepth);
+    if (storedMaxDisplayDepth) {
+      let parsed = Number(storedMaxDisplayDepth);
       if (!Number.isNaN(parsed)) {
-        setMaxDepth(clampDepth(parsed));
+        setMaxDisplayDepth(clampDepth(parsed));
       }
     }
 
@@ -168,8 +188,8 @@ export default function App() {
   }, [path]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.maxDepth, String(maxDepth));
-  }, [maxDepth]);
+    localStorage.setItem(STORAGE_KEYS.maxDepth, String(maxDisplayDepth));
+  }, [maxDisplayDepth]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.filterQuery, filterQuery);
@@ -183,11 +203,12 @@ export default function App() {
     setLoading(true);
     setError("");
     setScanResult(null);
+    setFocusedPath(null);
 
     try {
       let result = await invoke<ScanResult>("scan_directory", {
         path,
-        maxDepth,
+        maxDisplayDepth,
         excludes: parseExcludePatterns(excludeInput),
       });
       setScanResult(result);
@@ -196,6 +217,24 @@ export default function App() {
     }
 
     setLoading(false);
+  }
+
+  async function chooseFolder() {
+    let selected = await invoke<string | string[] | null>("plugin:dialog|open", {
+      options: {
+        directory: true,
+        multiple: false,
+        defaultPath: path,
+      },
+    });
+
+    if (typeof selected === "string") {
+      setPath(selected);
+    }
+  }
+
+  function onFocusDirectory(targetPath: string) {
+    setFocusedPath(targetPath);
   }
 
   return (
@@ -215,15 +254,18 @@ export default function App() {
           type="number"
           min={1}
           max={12}
-          value={maxDepth}
+          value={maxDisplayDepth}
           onChange={(e) => {
             let next = Number(e.target.value);
             if (Number.isNaN(next)) return;
-            setMaxDepth(clampDepth(next));
+            setMaxDisplayDepth(clampDepth(next));
           }}
-          aria-label="Max scan depth"
-          title="Max scan depth"
+          aria-label="Max display depth"
+          title="Max display depth"
         />
+        <button onClick={chooseFolder} disabled={loading}>
+          Choose Folder
+        </button>
         <button onClick={scan} disabled={loading}>
           {loading ? "Scanning..." : "Scan"}
         </button>
@@ -235,7 +277,7 @@ export default function App() {
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter by file/folder name or path"
           spellCheck={false}
-          disabled={!tree}
+          disabled={!currentRoot}
         />
       </div>
 
@@ -250,13 +292,31 @@ export default function App() {
 
       {error && <p className="error">{error}</p>}
 
+      {focusChain && focusChain.length > 0 && (
+        <section className="breadcrumbs">
+          {focusChain.map((node, index) => (
+            <button
+              key={node.path}
+              onClick={() => setFocusedPath(node.path)}
+              className={index === focusChain.length - 1 ? "crumb active" : "crumb"}
+              title={node.path}
+            >
+              {node.name || "/"}
+            </button>
+          ))}
+        </section>
+      )}
+
       {scanResult && (
         <section className="scan-metrics">
           <span>Total size: {formatBytes(scanResult.root.size)}</span>
-          <span>Nodes: {scanResult.total_nodes}</span>
-          <span>Files: {scanResult.total_files}</span>
-          <span>Dirs: {scanResult.total_dirs}</span>
-          <span>Elapsed: {scanResult.elapsed_ms} ms</span>
+          <span>Nodes: {scanResult.nodes}</span>
+          <span>Files: {scanResult.files}</span>
+          <span>Dirs: {scanResult.dirs}</span>
+          <span>Skipped: {scanResult.skipped}</span>
+          <span>Permission denied: {scanResult.permissionDenied}</span>
+          <span>Errors: {scanResult.errors}</span>
+          <span>Elapsed: {scanResult.elapsedMs} ms</span>
         </section>
       )}
 
@@ -264,12 +324,16 @@ export default function App() {
         <>
           <TopLargest root={filteredTree} />
           <section className="results">
-            <NodeView node={filteredTree} filterQuery={filterQuery} />
+            <NodeView
+              node={filteredTree}
+              filterQuery={filterQuery}
+              onFocusDirectory={onFocusDirectory}
+            />
           </section>
         </>
       )}
 
-      {tree && !filteredTree && (
+      {currentRoot && !filteredTree && (
         <p className="empty">No results for "{filterQuery}".</p>
       )}
     </main>

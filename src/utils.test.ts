@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { clampDepth, filterTree, parseExcludePatterns, type DiskNode } from "./utils";
+import {
+  clampDepth,
+  filterTree,
+  findPathToNode,
+  parseExcludePatterns,
+  type DiskNode,
+} from "./utils";
 
 function makeTree(): DiskNode {
   return {
@@ -74,5 +80,16 @@ describe("parseExcludePatterns", () => {
       "node_modules",
       "Library",
     ]);
+  });
+});
+
+describe("findPathToNode", () => {
+  it("returns full chain from root to matched node", () => {
+    let chain = findPathToNode(makeTree(), "/Users/alice/report.pdf");
+    expect(chain?.map((node) => node.name)).toEqual(["Users", "alice", "report.pdf"]);
+  });
+
+  it("returns null when target path is missing", () => {
+    expect(findPathToNode(makeTree(), "/Users/missing")).toBeNull();
   });
 });

@@ -13,7 +13,7 @@ It scans a directory and returns a recursive tree of file/folder sizes, then ren
 ## Features
 
 - Tauri command:
-  - `scan_directory(path: String, max_depth?: number, excludes?: string[])`
+  - `scan_directory(path: String, max_display_depth?: number, excludes?: string[])`
 - Recursive tree response shape:
 
 ```ts
@@ -31,21 +31,26 @@ It scans a directory and returns a recursive tree of file/folder sizes, then ren
 ```ts
 {
   root: DiskNode,
-  elapsed_ms: number,
-  total_nodes: number,
-  total_files: number,
-  total_dirs: number
+  nodes: number,
+  files: number,
+  dirs: number,
+  skipped: number,
+  permissionDenied: number,
+  errors: number,
+  elapsedMs: number
 }
 ```
 
-- Depth limit: `4`
-- Optional max depth from UI (`1..12`, default `4`)
+- Full recursive size computation for accurate directory totals
+- Optional max display depth from UI (`1..12`, default `4`)
 - Children sorted by `size` descending
 - Uses `symlink_metadata` to avoid blindly following symlinks
 - Skips unreadable files/folders without crashing
 - Optional exclude patterns from UI (comma-separated)
 - New scan requests cancel older in-progress scans
 - Rust scan runs in `spawn_blocking` to keep UI responsive
+- Native folder picker (Tauri dialog plugin)
+- Directory focus navigation + breadcrumb jumps (no rescan)
 - Dark UI with:
   - path input
   - max depth input

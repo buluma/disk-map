@@ -38,6 +38,27 @@ h1 {
   font-size: 13px;
 }
 
+.breadcrumbs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.crumb {
+  border: 1px solid #25345a;
+  background: #111b31;
+  color: #c8d3f4;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.crumb.active {
+  border-color: #4b73ff;
+  color: #eef2ff;
+}
+
 .toolbar {
   display: flex;
   gap: 12px;
@@ -190,6 +211,20 @@ button:disabled {
 
 .name {
   flex: 1;
+}
+
+.dir-link {
+  flex: 1;
+  text-align: left;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #d7e2ff;
+  font-weight: 500;
+}
+
+.dir-link:hover {
+  text-decoration: underline;
 }
 
 .size {

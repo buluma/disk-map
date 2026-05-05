@@ -51,3 +51,18 @@ export function parseExcludePatterns(text: string): string[] {
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
 }
+
+export function findPathToNode(root: DiskNode, targetPath: string): DiskNode[] | null {
+  if (root.path === targetPath) {
+    return [root];
+  }
+
+  for (let child of root.children) {
+    let childPath = findPathToNode(child, targetPath);
+    if (childPath) {
+      return [root, ...childPath];
+    }
+  }
+
+  return null;
+}

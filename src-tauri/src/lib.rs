@@ -1,9 +1,10 @@
 use serde::Serialize;
 use std::fs;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use tauri::State;
 
 #[derive(Clone, Serialize)]
@@ -15,13 +16,17 @@ struct DiskNode {
     children: Vec<DiskNode>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct ScanResult {
     root: DiskNode,
+    nodes: usize,
+    files: usize,
+    dirs: usize,
+    skipped: usize,
+    permission_denied: usize,
+    errors: usize,
     elapsed_ms: u128,
-    total_nodes: usize,
-    total_files: usize,
-    total_dirs: usize,
 }
 
 struct AppState {
@@ -30,9 +35,18 @@ struct AppState {
 
 #[derive(Default)]
 struct ScanStats {
-    total_nodes: usize,
-    total_files: usize,
-    total_dirs: usize,
+    nodes: usize,
+    files: usize,
+    dirs: usize,
+    skipped: usize,
+    permission_denied: usize,
+    errors: usize,
+}
+
+#[derive(Debug)]
+enum ScanError {
+    Canceled,
+    Io(ErrorKind),
 }
 
 fn is_canceled(latest_scan_id: &AtomicU64, scan_id: u64) -> bool {
@@ -55,20 +69,27 @@ fn should_exclude(path: &Path, excludes: &[String]) -> bool {
         .any(|pattern| !pattern.is_empty() && (name.contains(pattern) || full_path.contains(pattern)))
 }
 
+fn record_skip(error_kind: Option<ErrorKind>, stats: &mut ScanStats) {
+    stats.skipped += 1;
+    match error_kind {
+        Some(ErrorKind::PermissionDenied) => stats.permission_denied += 1,
+        Some(_) => stats.errors += 1,
+        None => {}
+    }
+}
+
 fn scan_path(
     path: &Path,
-    depth: usize,
-    max_depth: usize,
     excludes: &[String],
     stats: &mut ScanStats,
     latest_scan_id: &AtomicU64,
     scan_id: u64,
-) -> Result<DiskNode, String> {
+) -> Result<DiskNode, ScanError> {
     if is_canceled(latest_scan_id, scan_id) {
-        return Err("Scan canceled by a newer request".to_string());
+        return Err(ScanError::Canceled);
     }
 
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    let metadata = fs::symlink_metadata(path).map_err(|e| ScanError::Io(e.kind()))?;
     let file_type = metadata.file_type();
 
     let name = path
@@ -77,8 +98,8 @@ fn scan_path(
         .unwrap_or_else(|| path.to_string_lossy().to_string());
 
     if metadata.is_file() || file_type.is_symlink() {
-        stats.total_nodes += 1;
-        stats.total_files += 1;
+        stats.nodes += 1;
+        stats.files += 1;
         return Ok(DiskNode {
             name,
             path: path.to_string_lossy().to_string(),
@@ -90,34 +111,42 @@ fn scan_path(
 
     let mut children = Vec::new();
     let mut total_size = 0;
-    stats.total_nodes += 1;
-    stats.total_dirs += 1;
+    stats.nodes += 1;
+    stats.dirs += 1;
 
-    if metadata.is_dir() && depth < max_depth {
-        if let Ok(entries) = fs::read_dir(path) {
-            for entry in entries.flatten() {
-                if is_canceled(latest_scan_id, scan_id) {
-                    return Err("Scan canceled by a newer request".to_string());
-                }
+    if metadata.is_dir() {
+        match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries {
+                    if is_canceled(latest_scan_id, scan_id) {
+                        return Err(ScanError::Canceled);
+                    }
 
-                let child_path = entry.path();
-                if should_exclude(&child_path, excludes) {
-                    continue;
-                }
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(err) => {
+                            record_skip(Some(err.kind()), stats);
+                            continue;
+                        }
+                    };
 
-                if let Ok(child) = scan_path(
-                    &child_path,
-                    depth + 1,
-                    max_depth,
-                    excludes,
-                    stats,
-                    latest_scan_id,
-                    scan_id,
-                ) {
-                    total_size += child.size;
-                    children.push(child);
+                    let child_path = entry.path();
+                    if should_exclude(&child_path, excludes) {
+                        record_skip(None, stats);
+                        continue;
+                    }
+
+                    match scan_path(&child_path, excludes, stats, latest_scan_id, scan_id) {
+                        Ok(child) => {
+                            total_size += child.size;
+                            children.push(child);
+                        }
+                        Err(ScanError::Canceled) => return Err(ScanError::Canceled),
+                        Err(ScanError::Io(kind)) => record_skip(Some(kind), stats),
+                    }
                 }
             }
+            Err(err) => record_skip(Some(err.kind()), stats),
         }
     }
 
@@ -127,19 +156,45 @@ fn scan_path(
         name,
         path: path.to_string_lossy().to_string(),
         size: total_size,
-        is_dir: metadata.is_dir(),
+        is_dir: true,
         children,
     })
+}
+
+fn prune_for_display(node: &DiskNode, depth: usize, max_display_depth: usize) -> DiskNode {
+    if depth >= max_display_depth {
+        return DiskNode {
+            name: node.name.clone(),
+            path: node.path.clone(),
+            size: node.size,
+            is_dir: node.is_dir,
+            children: Vec::new(),
+        };
+    }
+
+    let children = node
+        .children
+        .iter()
+        .map(|child| prune_for_display(child, depth + 1, max_display_depth))
+        .collect::<Vec<_>>();
+
+    DiskNode {
+        name: node.name.clone(),
+        path: node.path.clone(),
+        size: node.size,
+        is_dir: node.is_dir,
+        children,
+    }
 }
 
 #[tauri::command]
 async fn scan_directory(
     path: String,
-    max_depth: Option<usize>,
+    max_display_depth: Option<usize>,
     excludes: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<ScanResult, String> {
-    let depth = max_depth.unwrap_or(4).min(12);
+    let display_depth = max_display_depth.unwrap_or(4).min(12);
     let exclude_patterns: Vec<String> = excludes
         .unwrap_or_default()
         .into_iter()
@@ -150,36 +205,42 @@ async fn scan_directory(
     let root_path = path.clone();
     let latest_scan_id = Arc::clone(&state.latest_scan_id);
 
-    let (root, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
+    let (full_root, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
         let mut stats = ScanStats::default();
-        let root = scan_path(
+        let full_root = scan_path(
             Path::new(&root_path),
-            0,
-            depth,
             &exclude_patterns,
             &mut stats,
             &latest_scan_id,
             scan_id,
-        )?;
+        )
+        .map_err(|err| match err {
+            ScanError::Canceled => "Scan canceled by a newer request".to_string(),
+            ScanError::Io(kind) => format!("Failed to scan root path ({kind:?})"),
+        })?;
         let elapsed_ms = started.elapsed().as_millis();
-        Ok::<(DiskNode, ScanStats, u128), String>((root, stats, elapsed_ms))
+        Ok::<(DiskNode, ScanStats, u128), String>((full_root, stats, elapsed_ms))
     })
     .await
     .map_err(|e| e.to_string())??;
 
     Ok(ScanResult {
-        root,
+        root: prune_for_display(&full_root, 0, display_depth),
+        nodes: stats.nodes,
+        files: stats.files,
+        dirs: stats.dirs,
+        skipped: stats.skipped,
+        permission_denied: stats.permission_denied,
+        errors: stats.errors,
         elapsed_ms,
-        total_nodes: stats.total_nodes,
-        total_files: stats.total_files,
-        total_dirs: stats.total_dirs,
     })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             latest_scan_id: Arc::new(AtomicU64::new(0)),
         })
@@ -206,14 +267,12 @@ mod tests {
     fn sorts_children_by_size_desc() {
         let root = test_root("sort");
         fs::create_dir_all(&root).expect("create root");
-        let small = root.join("small.txt");
-        let big = root.join("big.txt");
-        fs::write(&small, b"1").expect("write small");
-        fs::write(&big, vec![b'x'; 16]).expect("write big");
+        fs::write(root.join("small.txt"), b"1").expect("write small");
+        fs::write(root.join("big.txt"), vec![b'x'; 16]).expect("write big");
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let node = scan_path(&root, 0, 4, &[], &mut stats, &latest, 1).expect("scan");
+        let node = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
         assert_eq!(node.children.len(), 2);
         assert_eq!(node.children[0].name, "big.txt");
         assert_eq!(node.children[1].name, "small.txt");
@@ -222,18 +281,35 @@ mod tests {
     }
 
     #[test]
-    fn honors_depth_limit() {
-        let root = test_root("depth");
+    fn full_scan_is_recursive_for_size() {
+        let root = test_root("recursive");
         let nested = root.join("a").join("b").join("c");
         fs::create_dir_all(&nested).expect("create nested");
-        fs::write(nested.join("leaf.txt"), b"hello").expect("write leaf");
+        fs::write(nested.join("leaf.txt"), vec![b'x'; 20]).expect("write leaf");
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let node = scan_path(&root, 0, 1, &[], &mut stats, &latest, 1).expect("scan");
-        assert_eq!(node.children.len(), 1);
-        assert!(node.children[0].is_dir);
-        assert!(node.children[0].children.is_empty());
+        let node = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
+        assert!(node.size >= 20);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prune_only_limits_display_depth() {
+        let root = test_root("prune");
+        let nested = root.join("a").join("b");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(nested.join("leaf.bin"), vec![b'x'; 20]).expect("write leaf");
+
+        let mut stats = ScanStats::default();
+        let latest = AtomicU64::new(1);
+        let full = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
+        let pruned = prune_for_display(&full, 0, 1);
+
+        assert_eq!(full.size, pruned.size);
+        assert_eq!(pruned.children.len(), 1);
+        assert!(pruned.children[0].children.is_empty());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -251,7 +327,7 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let node = scan_path(&root, 0, 4, &[], &mut stats, &latest, 1).expect("scan");
+        let node = scan_path(&root, &[], &mut stats, &latest, 1).expect("scan");
         let symlink_node = node
             .children
             .iter()
@@ -275,13 +351,8 @@ mod tests {
 
         let mut stats = ScanStats::default();
         let latest = AtomicU64::new(1);
-        let result = scan_path(&root, 0, 4, &[], &mut stats, &latest, 1);
+        let result = scan_path(&root, &[], &mut stats, &latest, 1);
         assert!(result.is_ok());
-        let node = result.expect("scan");
-        assert!(
-            node.children.iter().any(|child| child.name == "visible.txt"),
-            "visible file should remain in results"
-        );
 
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755)).expect("restore perms");
         let _ = fs::remove_dir_all(&root);
@@ -298,8 +369,6 @@ mod tests {
         let latest = AtomicU64::new(1);
         let node = scan_path(
             &root,
-            0,
-            4,
             &[String::from("node_modules")],
             &mut stats,
             &latest,
@@ -307,6 +376,7 @@ mod tests {
         )
         .expect("scan");
         assert!(!node.children.iter().any(|child| child.name == "node_modules"));
+        assert!(stats.skipped >= 1);
 
         let _ = fs::remove_dir_all(&root);
     }
