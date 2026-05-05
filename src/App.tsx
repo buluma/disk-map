@@ -174,6 +174,7 @@ function TopLargest({
   onTrash: (path: string) => Promise<void>;
 }) {
   let largest = [...root.children].sort((a, b) => b.size - a.size).slice(0, limit);
+  let [open, setOpen] = useState(true);
 
   if (largest.length === 0) return null;
 
@@ -181,40 +182,44 @@ function TopLargest({
     <section className="summary">
       <div className="summary-head">
         <h2>Largest items in {root.name}</h2>
-        <span>Top {largest.length}</span>
+        <button className="collapse-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? "Collapse" : `Expand (${largest.length})`}
+        </button>
       </div>
-      <div className="summary-list">
-        {largest.map((item) => (
-          <div className="summary-row" key={item.path}>
-            <span className={`type-pill ${item.is_dir ? "dir" : "file"}`}>
-              {item.is_dir ? "DIR" : "FILE"}
-            </span>
-            {item.is_dir ? (
-              <button
-                className="summary-link"
-                onClick={() => onFocusDirectory(item.path)}
-                title={item.path}
-              >
-                {item.name}
-              </button>
-            ) : (
-              <span className="summary-name" title={item.path}>
-                {item.name}
+      {open && (
+        <div className="summary-list">
+          {largest.map((item) => (
+            <div className="summary-row" key={item.path}>
+              <span className={`type-pill ${item.is_dir ? "dir" : "file"}`}>
+                {item.is_dir ? "DIR" : "FILE"}
               </span>
-            )}
-            <span className="size">{formatBytes(item.size)}</span>
-            <button className="action-btn" onClick={() => onReveal(item.path)} title={`Reveal ${item.path}`}>
-              Reveal
-            </button>
-            <button className="action-btn" onClick={() => onOpen(item.path)} title={`Open ${item.path}`}>
-              Open
-            </button>
-            <button className="action-btn danger" onClick={() => onTrash(item.path)} title={`Move ${item.path} to Trash`}>
-              Trash
-            </button>
-          </div>
-        ))}
-      </div>
+              {item.is_dir ? (
+                <button
+                  className="summary-link"
+                  onClick={() => onFocusDirectory(item.path)}
+                  title={item.path}
+                >
+                  {item.name}
+                </button>
+              ) : (
+                <span className="summary-name" title={item.path}>
+                  {item.name}
+                </span>
+              )}
+              <span className="size">{formatBytes(item.size)}</span>
+              <button className="action-btn" onClick={() => onReveal(item.path)} title={`Reveal ${item.path}`}>
+                Reveal
+              </button>
+              <button className="action-btn" onClick={() => onOpen(item.path)} title={`Open ${item.path}`}>
+                Open
+              </button>
+              <button className="action-btn danger" onClick={() => onTrash(item.path)} title={`Move ${item.path} to Trash`}>
+                Trash
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -282,23 +287,28 @@ function GlobalLargestFiles({
 
 function FileTypeBreakdown({ fileTypes, limit = 12 }: { fileTypes: FileTypeStat[]; limit?: number }) {
   let top = fileTypes.slice(0, limit);
+  let [open, setOpen] = useState(true);
   if (!top.length) return null;
 
   return (
     <section className="summary">
       <div className="summary-head">
         <h2>Top File Types</h2>
-        <span>By total bytes</span>
+        <button className="collapse-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? "Collapse" : `Expand (${top.length})`}
+        </button>
       </div>
-      <div className="summary-list">
-        {top.map((entry) => (
-          <div className="summary-row" key={entry.kind}>
-            <span className="type-pill file">{entry.kind}</span>
-            <span className="summary-name">{entry.files} files</span>
-            <span className="size">{formatBytes(entry.bytes)}</span>
-          </div>
-        ))}
-      </div>
+      {open && (
+        <div className="summary-list">
+          {top.map((entry) => (
+            <div className="summary-row" key={entry.kind}>
+              <span className="type-pill file">{entry.kind}</span>
+              <span className="summary-name">{entry.files} files</span>
+              <span className="size">{formatBytes(entry.bytes)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -486,6 +496,7 @@ export default function App() {
   let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
   let [volumes, setVolumes] = useState<VolumeInfo[]>([]);
   let [volumesOpen, setVolumesOpen] = useState(false);
+  let [treeOpen, setTreeOpen] = useState(true);
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -824,15 +835,25 @@ export default function App() {
             onOpen={openPath}
             onTrash={moveToTrash}
           />
-          <section className="results">
-            <NodeView
-              node={filteredTree}
-              filterQuery={filterQuery}
-              onFocusDirectory={onFocusDirectory}
-              onReveal={revealInFinder}
-              onOpen={openPath}
-              onTrash={moveToTrash}
-            />
+          <section className="summary">
+            <div className="summary-head">
+              <h2>Tree Results</h2>
+              <button className="collapse-btn" onClick={() => setTreeOpen((v) => !v)}>
+                {treeOpen ? "Collapse" : "Expand"}
+              </button>
+            </div>
+            {treeOpen && (
+              <section className="results">
+                <NodeView
+                  node={filteredTree}
+                  filterQuery={filterQuery}
+                  onFocusDirectory={onFocusDirectory}
+                  onReveal={revealInFinder}
+                  onOpen={openPath}
+                  onTrash={moveToTrash}
+                />
+              </section>
+            )}
           </section>
         </>
       )}
