@@ -222,39 +222,44 @@ function GlobalLargestFiles({
   limit?: number;
 }) {
   let topFiles = files.slice(0, limit);
+  let [open, setOpen] = useState(false);
   if (!topFiles.length) return null;
 
   return (
     <section className="summary">
       <div className="summary-head">
         <h2>Largest Files (Global)</h2>
-        <span>Top {topFiles.length}</span>
+        <button className="collapse-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? "Collapse" : `Expand (${topFiles.length})`}
+        </button>
       </div>
-      <div className="summary-list">
-        {topFiles.map((file) => (
-          <div className="summary-row" key={file.path}>
-            <span className="type-pill file">FILE</span>
-            <span className="summary-name" title={file.path}>
-              {file.name}
-            </span>
-            <button
-              className="summary-folder-link"
-              onClick={() => onFocusDirectory(file.parentPath)}
-              title={file.parentPath}
-              disabled={!file.parentPath}
-            >
-              Open folder
-            </button>
-            <span className="size">{formatBytes(file.size)}</span>
-            <button className="action-btn" onClick={() => onReveal(file.path)} title={`Reveal ${file.path}`}>
-              Reveal
-            </button>
-            <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
-              Open
-            </button>
-          </div>
-        ))}
-      </div>
+      {open && (
+        <div className="summary-list">
+          {topFiles.map((file) => (
+            <div className="summary-row" key={file.path}>
+              <span className="type-pill file">FILE</span>
+              <span className="summary-name" title={file.path}>
+                {file.name}
+              </span>
+              <button
+                className="summary-folder-link"
+                onClick={() => onFocusDirectory(file.parentPath)}
+                title={file.parentPath}
+                disabled={!file.parentPath}
+              >
+                Open folder
+              </button>
+              <span className="size">{formatBytes(file.size)}</span>
+              <button className="action-btn" onClick={() => onReveal(file.path)} title={`Reveal ${file.path}`}>
+                Reveal
+              </button>
+              <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
+                Open
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -452,6 +457,7 @@ export default function App() {
   let [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
   let [volumes, setVolumes] = useState<VolumeInfo[]>([]);
+  let [volumesOpen, setVolumesOpen] = useState(false);
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -744,27 +750,6 @@ export default function App() {
           <span>Elapsed: {scanResult.elapsedMs} ms</span>
         </section>
       )}
-      {volumes.length > 0 && (
-        <section className="summary">
-          <div className="summary-head">
-            <h2>Mounted Volumes</h2>
-            <span>{volumes.length} detected</span>
-          </div>
-          <div className="summary-list">
-            {volumes.map((volume) => (
-              <div className="summary-row" key={volume.path}>
-                <span className="type-pill dir">VOL</span>
-                <button className="summary-link" onClick={() => setPath(volume.path)} title={volume.path}>
-                  {volume.name}
-                </button>
-                <span className="size">Used: {formatBytes(volume.usedBytes)}</span>
-                <span className="size">Free: {formatBytes(volume.availableBytes)}</span>
-                <span className="size">Total: {formatBytes(volume.totalBytes)}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
       {scanProgress && (
         <section className="scan-progress">
           <div className="progress-head">
@@ -782,12 +767,6 @@ export default function App() {
       {filteredTree && (
         <>
           <SunburstMap root={filteredTree} onFocusDirectory={onFocusDirectory} />
-          <GlobalLargestFiles
-            files={scanResult?.largestFiles ?? []}
-            onFocusDirectory={onFocusDirectory}
-            onReveal={revealInFinder}
-            onOpen={openPath}
-          />
           <FileTypeBreakdown fileTypes={scanResult?.fileTypes ?? []} />
           <TopLargest
             root={filteredTree}
@@ -809,6 +788,39 @@ export default function App() {
 
       {currentRoot && !filteredTree && (
         <p className="empty">No results for "{filterQuery}".</p>
+      )}
+
+      <GlobalLargestFiles
+        files={scanResult?.largestFiles ?? []}
+        onFocusDirectory={onFocusDirectory}
+        onReveal={revealInFinder}
+        onOpen={openPath}
+      />
+
+      {volumes.length > 0 && (
+        <section className="summary">
+          <div className="summary-head">
+            <h2>Mounted Volumes</h2>
+            <button className="collapse-btn" onClick={() => setVolumesOpen((v) => !v)}>
+              {volumesOpen ? "Collapse" : `Expand (${volumes.length})`}
+            </button>
+          </div>
+          {volumesOpen && (
+            <div className="summary-list">
+              {volumes.map((volume) => (
+                <div className="summary-row" key={volume.path}>
+                  <span className="type-pill dir">VOL</span>
+                  <button className="summary-link" onClick={() => setPath(volume.path)} title={volume.path}>
+                    {volume.name}
+                  </button>
+                  <span className="size">Used: {formatBytes(volume.usedBytes)}</span>
+                  <span className="size">Free: {formatBytes(volume.availableBytes)}</span>
+                  <span className="size">Total: {formatBytes(volume.totalBytes)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
     </main>
   );
