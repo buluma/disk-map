@@ -25,6 +25,19 @@ h1 {
   color: #a0acc8;
 }
 
+.scan-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  border: 1px solid #222d46;
+  background: #101624;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  color: #bac7e6;
+  font-size: 13px;
+}
+
 .toolbar {
   display: flex;
   gap: 12px;

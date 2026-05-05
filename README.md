@@ -12,7 +12,8 @@ It scans a directory and returns a recursive tree of file/folder sizes, then ren
 
 ## Features
 
-- Tauri command: `scan_directory(path: String)`
+- Tauri command:
+  - `scan_directory(path: String, max_depth?: number, excludes?: string[])`
 - Recursive tree response shape:
 
 ```ts
@@ -25,15 +26,36 @@ It scans a directory and returns a recursive tree of file/folder sizes, then ren
 }
 ```
 
+- Scan response envelope:
+
+```ts
+{
+  root: DiskNode,
+  elapsed_ms: number,
+  total_nodes: number,
+  total_files: number,
+  total_dirs: number
+}
+```
+
 - Depth limit: `4`
+- Optional max depth from UI (`1..12`, default `4`)
 - Children sorted by `size` descending
 - Uses `symlink_metadata` to avoid blindly following symlinks
 - Skips unreadable files/folders without crashing
+- Optional exclude patterns from UI (comma-separated)
+- New scan requests cancel older in-progress scans
+- Rust scan runs in `spawn_blocking` to keep UI responsive
 - Dark UI with:
   - path input
+  - max depth input
+  - exclude patterns input
   - scan button
   - loading state
   - error state
+  - scan metrics bar
+  - largest-items summary
+  - tree filter
   - expandable tree
   - human-readable sizes
 
@@ -65,6 +87,13 @@ npm run tauri dev
 
 ```bash
 npm run tauri build
+```
+
+## Tests
+
+```bash
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Notes

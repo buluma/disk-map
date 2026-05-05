@@ -1,36 +1,28 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import {
+  clampDepth,
+  filterTree,
+  formatBytes,
+  parseExcludePatterns,
+  type DiskNode,
+} from "./utils";
 
-type DiskNode = {
-  name: string;
-  path: string;
-  size: number;
-  is_dir: boolean;
-  children: DiskNode[];
+type ScanResult = {
+  root: DiskNode;
+  elapsed_ms: number;
+  total_nodes: number;
+  total_files: number;
+  total_dirs: number;
 };
 
 const STORAGE_KEYS = {
   path: "disk-map:path",
   maxDepth: "disk-map:max-depth",
   filterQuery: "disk-map:filter-query",
+  excludes: "disk-map:excludes",
 } as const;
-
-function formatBytes(bytes: number) {
-  if (bytes === 0) return "0 B";
-
-  let units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let size = bytes;
-  let index = 0;
-
-  while (size >= 1024 && index < units.length - 1) {
-    size = size / 1024;
-    index++;
-  }
-
-  let formatted = size >= 10 ? size.toFixed(1) : size.toFixed(2);
-  return `${formatted} ${units[index]}`;
-}
 
 function highlightMatch(text: string, query: string): ReactNode {
   let q = query.trim();
@@ -53,25 +45,6 @@ function highlightMatch(text: string, query: string): ReactNode {
       {after}
     </>
   );
-}
-
-function filterTree(node: DiskNode, query: string): DiskNode | null {
-  let q = query.trim().toLowerCase();
-  if (!q) return node;
-
-  let selfMatch = node.name.toLowerCase().includes(q) || node.path.toLowerCase().includes(q);
-  let filteredChildren = node.children
-    .map((child) => filterTree(child, q))
-    .filter((child): child is DiskNode => child !== null);
-
-  if (!selfMatch && filteredChildren.length === 0) {
-    return null;
-  }
-
-  return {
-    ...node,
-    children: filteredChildren,
-  };
 }
 
 function NodeView({
@@ -158,9 +131,11 @@ export default function App() {
   let [path, setPath] = useState("/Users");
   let [filterQuery, setFilterQuery] = useState("");
   let [maxDepth, setMaxDepth] = useState(4);
-  let [tree, setTree] = useState<DiskNode | null>(null);
+  let [excludeInput, setExcludeInput] = useState(".git,node_modules");
+  let [scanResult, setScanResult] = useState<ScanResult | null>(null);
   let [loading, setLoading] = useState(false);
   let [error, setError] = useState("");
+  let tree = scanResult?.root ?? null;
   let filteredTree = tree ? filterTree(tree, filterQuery) : null;
 
   useEffect(() => {
@@ -173,13 +148,18 @@ export default function App() {
     if (storedMaxDepth) {
       let parsed = Number(storedMaxDepth);
       if (!Number.isNaN(parsed)) {
-        setMaxDepth(Math.min(12, Math.max(1, Math.floor(parsed))));
+        setMaxDepth(clampDepth(parsed));
       }
     }
 
     let storedFilterQuery = localStorage.getItem(STORAGE_KEYS.filterQuery);
     if (storedFilterQuery) {
       setFilterQuery(storedFilterQuery);
+    }
+
+    let storedExcludes = localStorage.getItem(STORAGE_KEYS.excludes);
+    if (storedExcludes !== null) {
+      setExcludeInput(storedExcludes);
     }
   }, []);
 
@@ -195,14 +175,22 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS.filterQuery, filterQuery);
   }, [filterQuery]);
 
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.excludes, excludeInput);
+  }, [excludeInput]);
+
   async function scan() {
     setLoading(true);
     setError("");
-    setTree(null);
+    setScanResult(null);
 
     try {
-      let result = await invoke<DiskNode>("scan_directory", { path, maxDepth });
-      setTree(result);
+      let result = await invoke<ScanResult>("scan_directory", {
+        path,
+        maxDepth,
+        excludes: parseExcludePatterns(excludeInput),
+      });
+      setScanResult(result);
     } catch (err) {
       setError(String(err));
     }
@@ -231,7 +219,7 @@ export default function App() {
           onChange={(e) => {
             let next = Number(e.target.value);
             if (Number.isNaN(next)) return;
-            setMaxDepth(Math.min(12, Math.max(1, Math.floor(next))));
+            setMaxDepth(clampDepth(next));
           }}
           aria-label="Max scan depth"
           title="Max scan depth"
@@ -251,7 +239,26 @@ export default function App() {
         />
       </div>
 
+      <div className="toolbar">
+        <input
+          value={excludeInput}
+          onChange={(e) => setExcludeInput(e.target.value)}
+          placeholder="Exclude patterns (comma-separated), e.g. .git,node_modules,Library"
+          spellCheck={false}
+        />
+      </div>
+
       {error && <p className="error">{error}</p>}
+
+      {scanResult && (
+        <section className="scan-metrics">
+          <span>Total size: {formatBytes(scanResult.root.size)}</span>
+          <span>Nodes: {scanResult.total_nodes}</span>
+          <span>Files: {scanResult.total_files}</span>
+          <span>Dirs: {scanResult.total_dirs}</span>
+          <span>Elapsed: {scanResult.elapsed_ms} ms</span>
+        </section>
+      )}
 
       {filteredTree && (
         <>
