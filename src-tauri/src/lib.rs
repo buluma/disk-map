@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -371,14 +372,86 @@ fn cancel_scan(state: State<'_, AppState>) {
     state.latest_scan_id.fetch_add(1, Ordering::Relaxed);
 }
 
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("Failed to reveal in Finder: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("Failed to reveal in File Explorer: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = Path::new(&path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(path);
+        Command::new("xdg-open")
+            .arg(parent)
+            .status()
+            .map_err(|e| format!("Failed to open parent directory: {e}"))?;
+        return Ok(());
+    }
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("Failed to open path: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .status()
+            .map_err(|e| format!("Failed to open path: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("Failed to open path: {e}"))?;
+        return Ok(());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             latest_scan_id: Arc::new(AtomicU64::new(0)),
         })
-        .invoke_handler(tauri::generate_handler![scan_directory, cancel_scan])
+        .invoke_handler(tauri::generate_handler![
+            scan_directory,
+            cancel_scan,
+            reveal_in_finder,
+            open_path
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

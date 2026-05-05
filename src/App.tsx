@@ -75,11 +75,15 @@ function NodeView({
   level = 0,
   filterQuery,
   onFocusDirectory,
+  onReveal,
+  onOpen,
 }: {
   node: DiskNode;
   level?: number;
   filterQuery: string;
   onFocusDirectory: (path: string) => void;
+  onReveal: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<void>;
 }) {
   let [open, setOpen] = useState(level < 1);
   let hasChildren = node.children.length > 0;
@@ -109,6 +113,12 @@ function NodeView({
           </span>
         )}
         <span className="size">{formatBytes(node.size)}</span>
+        <button className="action-btn" onClick={() => onReveal(node.path)} title={`Reveal ${node.path}`}>
+          Reveal
+        </button>
+        <button className="action-btn" onClick={() => onOpen(node.path)} title={`Open ${node.path}`}>
+          Open
+        </button>
       </div>
 
       {open &&
@@ -119,6 +129,8 @@ function NodeView({
             level={level + 1}
             filterQuery={filterQuery}
             onFocusDirectory={onFocusDirectory}
+            onReveal={onReveal}
+            onOpen={onOpen}
           />
         ))}
     </div>
@@ -129,10 +141,14 @@ function TopLargest({
   root,
   limit = 8,
   onFocusDirectory,
+  onReveal,
+  onOpen,
 }: {
   root: DiskNode;
   limit?: number;
   onFocusDirectory: (path: string) => void;
+  onReveal: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<void>;
 }) {
   let largest = [...root.children].sort((a, b) => b.size - a.size).slice(0, limit);
 
@@ -164,6 +180,12 @@ function TopLargest({
               </span>
             )}
             <span className="size">{formatBytes(item.size)}</span>
+            <button className="action-btn" onClick={() => onReveal(item.path)} title={`Reveal ${item.path}`}>
+              Reveal
+            </button>
+            <button className="action-btn" onClick={() => onOpen(item.path)} title={`Open ${item.path}`}>
+              Open
+            </button>
           </div>
         ))}
       </div>
@@ -174,10 +196,14 @@ function TopLargest({
 function GlobalLargestFiles({
   files,
   onFocusDirectory,
+  onReveal,
+  onOpen,
   limit = 20,
 }: {
   files: LargestFile[];
   onFocusDirectory: (path: string) => void;
+  onReveal: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<void>;
   limit?: number;
 }) {
   let topFiles = files.slice(0, limit);
@@ -205,6 +231,12 @@ function GlobalLargestFiles({
               Open folder
             </button>
             <span className="size">{formatBytes(file.size)}</span>
+            <button className="action-btn" onClick={() => onReveal(file.path)} title={`Reveal ${file.path}`}>
+              Reveal
+            </button>
+            <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
+              Open
+            </button>
           </div>
         ))}
       </div>
@@ -519,6 +551,22 @@ export default function App() {
     setFocusedPath(targetPath);
   }
 
+  async function revealInFinder(targetPath: string) {
+    try {
+      await invoke("reveal_in_finder", { path: targetPath });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function openPath(targetPath: string) {
+    try {
+      await invoke("open_path", { path: targetPath });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   return (
     <main className="app">
       <h1>disk-map</h1>
@@ -633,13 +681,22 @@ export default function App() {
           <GlobalLargestFiles
             files={scanResult?.largestFiles ?? []}
             onFocusDirectory={onFocusDirectory}
+            onReveal={revealInFinder}
+            onOpen={openPath}
           />
-          <TopLargest root={filteredTree} onFocusDirectory={onFocusDirectory} />
+          <TopLargest
+            root={filteredTree}
+            onFocusDirectory={onFocusDirectory}
+            onReveal={revealInFinder}
+            onOpen={openPath}
+          />
           <section className="results">
             <NodeView
               node={filteredTree}
               filterQuery={filterQuery}
               onFocusDirectory={onFocusDirectory}
+              onReveal={revealInFinder}
+              onOpen={openPath}
             />
           </section>
         </>
