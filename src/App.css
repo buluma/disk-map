@@ -183,12 +183,27 @@ input {
   outline: none;
 }
 
+select {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #2a3349;
+  background: #141a26;
+  color: #eef2ff;
+  outline: none;
+  min-width: 220px;
+}
+
 .depth-input {
   width: 96px;
   flex: 0 0 96px;
 }
 
 input:focus {
+  border-color: #4b73ff;
+  box-shadow: 0 0 0 2px rgba(75, 115, 255, 0.25);
+}
+
+select:focus {
   border-color: #4b73ff;
   box-shadow: 0 0 0 2px rgba(75, 115, 255, 0.25);
 }

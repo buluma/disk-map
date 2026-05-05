@@ -37,6 +37,14 @@ type FileTypeStat = {
   files: number;
 };
 
+type VolumeInfo = {
+  name: string;
+  path: string;
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+};
+
 type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
 
 type ScanProgress = {
@@ -443,6 +451,7 @@ export default function App() {
   let [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   let [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
+  let [volumes, setVolumes] = useState<VolumeInfo[]>([]);
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -475,6 +484,24 @@ export default function App() {
     if (storedExcludes !== null) {
       setExcludeInput(storedExcludes);
     }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    invoke<VolumeInfo[]>("list_volumes")
+      .then((result) => {
+        if (mounted) {
+          setVolumes(result);
+        }
+      })
+      .catch((err) => {
+        if (mounted) {
+          setError(String(err));
+        }
+      });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -577,6 +604,15 @@ export default function App() {
     }
   }
 
+  async function refreshVolumes() {
+    try {
+      let result = await invoke<VolumeInfo[]>("list_volumes");
+      setVolumes(result);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   function onFocusDirectory(targetPath: string) {
     setFocusedPath(targetPath);
   }
@@ -603,6 +639,20 @@ export default function App() {
       <p className="subtitle">Recursive scanner with expandable tree view</p>
 
       <div className="toolbar">
+        <select
+          className="volume-select"
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          disabled={loading || volumes.length === 0}
+          title="Mounted volumes"
+        >
+          <option value={path}>Current path</option>
+          {volumes.map((volume) => (
+            <option key={volume.path} value={volume.path}>
+              {volume.name} ({volume.path})
+            </option>
+          ))}
+        </select>
         <input
           value={path}
           onChange={(e) => setPath(e.target.value)}
@@ -625,6 +675,9 @@ export default function App() {
         />
         <button onClick={chooseFolder} disabled={loading}>
           Choose Folder
+        </button>
+        <button onClick={refreshVolumes} disabled={loading}>
+          Refresh Volumes
         </button>
         <button onClick={cancelScan} disabled={!loading}>
           Cancel
@@ -689,6 +742,27 @@ export default function App() {
           <span>Permission denied: {scanResult.permissionDenied}</span>
           <span>Errors: {scanResult.errors}</span>
           <span>Elapsed: {scanResult.elapsedMs} ms</span>
+        </section>
+      )}
+      {volumes.length > 0 && (
+        <section className="summary">
+          <div className="summary-head">
+            <h2>Mounted Volumes</h2>
+            <span>{volumes.length} detected</span>
+          </div>
+          <div className="summary-list">
+            {volumes.map((volume) => (
+              <div className="summary-row" key={volume.path}>
+                <span className="type-pill dir">VOL</span>
+                <button className="summary-link" onClick={() => setPath(volume.path)} title={volume.path}>
+                  {volume.name}
+                </button>
+                <span className="size">Used: {formatBytes(volume.usedBytes)}</span>
+                <span className="size">Free: {formatBytes(volume.availableBytes)}</span>
+                <span className="size">Total: {formatBytes(volume.totalBytes)}</span>
+              </div>
+            ))}
+          </div>
         </section>
       )}
       {scanProgress && (

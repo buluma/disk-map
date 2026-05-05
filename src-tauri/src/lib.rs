@@ -51,6 +51,16 @@ struct FileTypeStat {
     files: usize,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct VolumeInfo {
+    name: String,
+    path: String,
+    total_bytes: u64,
+    used_bytes: u64,
+    available_bytes: u64,
+}
+
 struct AppState {
     latest_scan_id: Arc<AtomicU64>,
 }
@@ -474,6 +484,102 @@ fn open_path(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
+    let mut paths = discover_volume_paths();
+    paths.sort();
+    paths.dedup();
+
+    let mut volumes = Vec::new();
+    for path in paths {
+        if let Some(volume) = volume_info_for_path(&path) {
+            volumes.push(volume);
+        }
+    }
+    volumes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(volumes)
+}
+
+fn discover_volume_paths() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut out = vec![String::from("/")];
+        if let Ok(entries) = fs::read_dir("/Volumes") {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    out.push(p.to_string_lossy().to_string());
+                }
+            }
+        }
+        return out;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut out = Vec::new();
+        if let Ok(system_drive) = std::env::var("SystemDrive") {
+            out.push(format!("{system_drive}\\"));
+        } else {
+            out.push(String::from("C:\\"));
+        }
+        return out;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut out = vec![String::from("/")];
+        for base in ["/mnt", "/media"] {
+            if let Ok(entries) = fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        out.push(p.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        return out;
+    }
+}
+
+fn volume_info_for_path(path: &str) -> Option<VolumeInfo> {
+    let output = Command::new("df").args(["-kP", path]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text
+        .lines()
+        .skip(1)
+        .find(|line| !line.trim().is_empty())?
+        .to_string();
+    let cols = line.split_whitespace().collect::<Vec<_>>();
+    if cols.len() < 6 {
+        return None;
+    }
+    let total_kb = cols.get(1)?.parse::<u64>().ok()?;
+    let used_kb = cols.get(2)?.parse::<u64>().ok()?;
+    let avail_kb = cols.get(3)?.parse::<u64>().ok()?;
+    let mount = cols.get(5).copied().unwrap_or(path);
+    let name = if mount == "/" {
+        String::from("System")
+    } else {
+        Path::new(mount)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| mount.to_string())
+    };
+
+    Some(VolumeInfo {
+        name,
+        path: mount.to_string(),
+        total_bytes: total_kb.saturating_mul(1024),
+        used_bytes: used_kb.saturating_mul(1024),
+        available_bytes: avail_kb.saturating_mul(1024),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -486,7 +592,8 @@ pub fn run() {
             scan_directory,
             cancel_scan,
             reveal_in_finder,
-            open_path
+            open_path,
+            list_volumes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
