@@ -337,6 +337,15 @@ button:disabled {
   border-color: #4b73ff;
 }
 
+.action-btn.danger {
+  border-color: #6b2a2a;
+  color: #ffc5c5;
+}
+
+.action-btn.danger:hover {
+  border-color: #c74646;
+}
+
 .summary-link:hover {
   text-decoration: underline;
 }

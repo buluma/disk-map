@@ -346,51 +346,55 @@ async fn scan_directory(
     let latest_scan_id = Arc::clone(&state.latest_scan_id);
     let app_handle_for_scan = app_handle.clone();
 
-    let (full_root, mut largest_files, file_types, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
-        let started = Instant::now();
-        let mut stats = ScanStats::default();
-        let mut largest_files = Vec::<LargestFile>::with_capacity(largest_limit);
-        let mut file_types = HashMap::<String, (u64, usize)>::new();
-        let mut progress = ProgressState::default();
-        let full_root = scan_path(
-            Path::new(&root_path),
-            &exclude_patterns,
-            &mut stats,
-            &mut largest_files,
-            largest_limit,
-            &mut file_types,
-            &mut progress,
-            Some(&app_handle_for_scan),
-            client_scan_id,
-            started,
-            &latest_scan_id,
-            scan_id,
-        )
-        .map_err(|err| match err {
-            ScanError::Canceled => "Scan canceled by a newer request".to_string(),
-            ScanError::Io(kind) => format!("Failed to scan root path ({kind:?})"),
-        })?;
-        let _ = app_handle_for_scan.emit(
-            "scan-progress",
-            ScanProgress {
+    let (full_root, mut largest_files, file_types, stats, elapsed_ms) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let started = Instant::now();
+            let mut stats = ScanStats::default();
+            let mut largest_files = Vec::<LargestFile>::with_capacity(largest_limit);
+            let mut file_types = HashMap::<String, (u64, usize)>::new();
+            let mut progress = ProgressState::default();
+            let full_root = scan_path(
+                Path::new(&root_path),
+                &exclude_patterns,
+                &mut stats,
+                &mut largest_files,
+                largest_limit,
+                &mut file_types,
+                &mut progress,
+                Some(&app_handle_for_scan),
                 client_scan_id,
-                entries_scanned: progress.entries_scanned,
-                dirs_scanned: progress.dirs_scanned,
-                bytes_accumulated: progress.bytes_accumulated,
-                elapsed_ms: started.elapsed().as_millis(),
-            },
-        );
-        let elapsed_ms = started.elapsed().as_millis();
-        Ok::<(DiskNode, Vec<LargestFile>, HashMap<String, (u64, usize)>, ScanStats, u128), String>((
-            full_root,
-            largest_files,
-            file_types,
-            stats,
-            elapsed_ms,
-        ))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+                started,
+                &latest_scan_id,
+                scan_id,
+            )
+            .map_err(|err| match err {
+                ScanError::Canceled => "Scan canceled by a newer request".to_string(),
+                ScanError::Io(kind) => format!("Failed to scan root path ({kind:?})"),
+            })?;
+            let _ = app_handle_for_scan.emit(
+                "scan-progress",
+                ScanProgress {
+                    client_scan_id,
+                    entries_scanned: progress.entries_scanned,
+                    dirs_scanned: progress.dirs_scanned,
+                    bytes_accumulated: progress.bytes_accumulated,
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            );
+            let elapsed_ms = started.elapsed().as_millis();
+            Ok::<
+                (
+                    DiskNode,
+                    Vec<LargestFile>,
+                    HashMap<String, (u64, usize)>,
+                    ScanStats,
+                    u128,
+                ),
+                String,
+            >((full_root, largest_files, file_types, stats, elapsed_ms))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
     largest_files.sort_by(|a, b| b.size.cmp(&a.size));
     let mut file_types = file_types
@@ -480,6 +484,63 @@ fn open_path(path: String) -> Result<(), String> {
             .arg(&path)
             .status()
             .map_err(|e| format!("Failed to open path: {e}"))?;
+        return Ok(());
+    }
+}
+
+#[tauri::command]
+fn move_to_trash(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+        let status = Command::new("osascript")
+            .args([
+                "-e",
+                &format!("tell application \"Finder\" to delete POSIX file \"{escaped}\""),
+            ])
+            .status()
+            .map_err(|e| format!("Failed to move to Trash: {e}"))?;
+        if !status.success() {
+            return Err("Failed to move item to Trash".to_string());
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let escaped = path.replace('\'', "''");
+        let script = format!(
+            "$p = '{escaped}'; $shell = New-Object -ComObject Shell.Application; \
+             $folder = Split-Path -Parent $p; $name = Split-Path -Leaf $p; \
+             $ns = $shell.Namespace($folder); if ($ns -eq $null) {{ exit 1 }}; \
+             $item = $ns.ParseName($name); if ($item -eq $null) {{ exit 1 }}; \
+             $item.InvokeVerb('delete')"
+        );
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status()
+            .map_err(|e| format!("Failed to move to Recycle Bin: {e}"))?;
+        if !status.success() {
+            return Err("Failed to move item to Recycle Bin".to_string());
+        }
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("gio").args(["trash", &path]).status();
+        if let Ok(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        let status = Command::new("trash-put")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("Failed to move to Trash: {e}"))?;
+        if !status.success() {
+            return Err("Failed to move item to Trash".to_string());
+        }
         return Ok(());
     }
 }
@@ -594,6 +655,7 @@ pub fn run() {
             cancel_scan,
             reveal_in_finder,
             open_path,
+            move_to_trash,
             list_volumes
         ])
         .run(tauri::generate_context!())

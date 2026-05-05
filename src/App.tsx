@@ -92,6 +92,7 @@ function NodeView({
   onFocusDirectory,
   onReveal,
   onOpen,
+  onTrash,
 }: {
   node: DiskNode;
   level?: number;
@@ -99,6 +100,7 @@ function NodeView({
   onFocusDirectory: (path: string) => void;
   onReveal: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
+  onTrash: (path: string) => Promise<void>;
 }) {
   let [open, setOpen] = useState(level < 1);
   let hasChildren = node.children.length > 0;
@@ -134,6 +136,9 @@ function NodeView({
         <button className="action-btn" onClick={() => onOpen(node.path)} title={`Open ${node.path}`}>
           Open
         </button>
+        <button className="action-btn danger" onClick={() => onTrash(node.path)} title={`Move ${node.path} to Trash`}>
+          Trash
+        </button>
       </div>
 
       {open &&
@@ -146,6 +151,7 @@ function NodeView({
             onFocusDirectory={onFocusDirectory}
             onReveal={onReveal}
             onOpen={onOpen}
+            onTrash={onTrash}
           />
         ))}
     </div>
@@ -158,12 +164,14 @@ function TopLargest({
   onFocusDirectory,
   onReveal,
   onOpen,
+  onTrash,
 }: {
   root: DiskNode;
   limit?: number;
   onFocusDirectory: (path: string) => void;
   onReveal: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
+  onTrash: (path: string) => Promise<void>;
 }) {
   let largest = [...root.children].sort((a, b) => b.size - a.size).slice(0, limit);
 
@@ -201,6 +209,9 @@ function TopLargest({
             <button className="action-btn" onClick={() => onOpen(item.path)} title={`Open ${item.path}`}>
               Open
             </button>
+            <button className="action-btn danger" onClick={() => onTrash(item.path)} title={`Move ${item.path} to Trash`}>
+              Trash
+            </button>
           </div>
         ))}
       </div>
@@ -213,12 +224,14 @@ function GlobalLargestFiles({
   onFocusDirectory,
   onReveal,
   onOpen,
+  onTrash,
   limit = 20,
 }: {
   files: LargestFile[];
   onFocusDirectory: (path: string) => void;
   onReveal: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
+  onTrash: (path: string) => Promise<void>;
   limit?: number;
 }) {
   let topFiles = files.slice(0, limit);
@@ -255,6 +268,9 @@ function GlobalLargestFiles({
               </button>
               <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
                 Open
+              </button>
+              <button className="action-btn danger" onClick={() => onTrash(file.path)} title={`Move ${file.path} to Trash`}>
+                Trash
               </button>
             </div>
           ))}
@@ -368,6 +384,18 @@ function segmentColor(depth: number, index: number) {
   let saturation = 60 - Math.min(depth * 4, 20);
   let lightness = 50 - Math.min(depth * 3, 14);
   return `hsl(${hue} ${saturation}% ${lightness}%)`;
+}
+
+function removeNodeByPath(node: DiskNode, targetPath: string): DiskNode {
+  let nextChildren = node.children
+    .filter((child) => child.path !== targetPath)
+    .map((child) => removeNodeByPath(child, targetPath));
+  let nextSize = node.is_dir ? nextChildren.reduce((sum, child) => sum + child.size, 0) : node.size;
+  return {
+    ...node,
+    size: nextSize,
+    children: nextChildren,
+  };
 }
 
 function SunburstMap({
@@ -639,6 +667,27 @@ export default function App() {
     }
   }
 
+  async function moveToTrash(targetPath: string) {
+    let ok = window.confirm(`Move this item to Trash?\n\n${targetPath}`);
+    if (!ok) return;
+    try {
+      await invoke("move_to_trash", { path: targetPath });
+      setScanResult((prev) => {
+        if (!prev || prev.root.path === targetPath) return prev;
+        return {
+          ...prev,
+          root: removeNodeByPath(prev.root, targetPath),
+          largestFiles: prev.largestFiles.filter((item) => item.path !== targetPath),
+        };
+      });
+      if (focusedPath === targetPath) {
+        setFocusedPath(null);
+      }
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   return (
     <main className="app">
       <h1>disk-map</h1>
@@ -773,6 +822,7 @@ export default function App() {
             onFocusDirectory={onFocusDirectory}
             onReveal={revealInFinder}
             onOpen={openPath}
+            onTrash={moveToTrash}
           />
           <section className="results">
             <NodeView
@@ -781,6 +831,7 @@ export default function App() {
               onFocusDirectory={onFocusDirectory}
               onReveal={revealInFinder}
               onOpen={openPath}
+              onTrash={moveToTrash}
             />
           </section>
         </>
@@ -795,6 +846,7 @@ export default function App() {
         onFocusDirectory={onFocusDirectory}
         onReveal={revealInFinder}
         onOpen={openPath}
+        onTrash={moveToTrash}
       />
 
       {volumes.length > 0 && (
