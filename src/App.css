@@ -57,6 +57,71 @@ h1 {
   font-size: 13px;
 }
 
+.sunburst-card {
+  border: 1px solid #222d46;
+  border-radius: 14px;
+  background: #101624;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.sunburst-wrap {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+}
+
+.sunburst {
+  width: 100%;
+  height: auto;
+  max-width: 560px;
+  justify-self: center;
+}
+
+.sunburst-segment {
+  stroke: #0d1424;
+  stroke-width: 1;
+  transition: opacity 120ms ease;
+}
+
+.sunburst-segment:hover {
+  opacity: 0.82;
+}
+
+.sunburst-segment.clickable {
+  cursor: pointer;
+}
+
+.sunburst-label-main {
+  fill: #d9e4ff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sunburst-label-sub {
+  fill: #9eb0d7;
+  font-size: 12px;
+}
+
+.sunburst-tooltip {
+  min-height: 96px;
+  border: 1px solid #233156;
+  background: #0d1424;
+  border-radius: 10px;
+  padding: 10px;
+  color: #b9c8e9;
+  font-size: 13px;
+}
+
+.tooltip-title {
+  color: #e6eeff;
+  font-weight: 600;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
 .breadcrumbs {
   display: flex;
   gap: 8px;
@@ -271,4 +336,10 @@ button:disabled {
 
 .empty {
   color: #a0acc8;
+}
+
+@media (max-width: 900px) {
+  .sunburst-wrap {
+    grid-template-columns: 1fr;
+  }
 }
