@@ -14,6 +14,7 @@ import {
 type ScanResult = {
   root: DiskNode;
   largestFiles: LargestFile[];
+  fileTypes: FileTypeStat[];
   nodes: number;
   files: number;
   dirs: number;
@@ -28,6 +29,12 @@ type LargestFile = {
   path: string;
   size: number;
   parentPath: string;
+};
+
+type FileTypeStat = {
+  kind: string;
+  bytes: number;
+  files: number;
 };
 
 type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
@@ -237,6 +244,29 @@ function GlobalLargestFiles({
             <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
               Open
             </button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FileTypeBreakdown({ fileTypes, limit = 12 }: { fileTypes: FileTypeStat[]; limit?: number }) {
+  let top = fileTypes.slice(0, limit);
+  if (!top.length) return null;
+
+  return (
+    <section className="summary">
+      <div className="summary-head">
+        <h2>Top File Types</h2>
+        <span>By total bytes</span>
+      </div>
+      <div className="summary-list">
+        {top.map((entry) => (
+          <div className="summary-row" key={entry.kind}>
+            <span className="type-pill file">{entry.kind}</span>
+            <span className="summary-name">{entry.files} files</span>
+            <span className="size">{formatBytes(entry.bytes)}</span>
           </div>
         ))}
       </div>
@@ -684,6 +714,7 @@ export default function App() {
             onReveal={revealInFinder}
             onOpen={openPath}
           />
+          <FileTypeBreakdown fileTypes={scanResult?.fileTypes ?? []} />
           <TopLargest
             root={filteredTree}
             onFocusDirectory={onFocusDirectory}

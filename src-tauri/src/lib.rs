@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -23,6 +24,7 @@ struct DiskNode {
 struct ScanResult {
     root: DiskNode,
     largest_files: Vec<LargestFile>,
+    file_types: Vec<FileTypeStat>,
     nodes: usize,
     files: usize,
     dirs: usize,
@@ -39,6 +41,14 @@ struct LargestFile {
     path: String,
     size: u64,
     parent_path: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FileTypeStat {
+    kind: String,
+    bytes: u64,
+    files: usize,
 }
 
 struct AppState {
@@ -113,6 +123,7 @@ fn scan_path(
     stats: &mut ScanStats,
     largest_files: &mut Vec<LargestFile>,
     largest_limit: usize,
+    file_types: &mut HashMap<String, (u64, usize)>,
     progress: &mut ProgressState,
     app_handle: Option<&tauri::AppHandle>,
     client_scan_id: u64,
@@ -151,6 +162,7 @@ fn scan_path(
                 );
             }
         }
+        track_file_type(path, metadata.len(), file_types);
         let parent_path = path
             .parent()
             .map(|p| p.to_string_lossy().to_string())
@@ -209,6 +221,7 @@ fn scan_path(
                         stats,
                         largest_files,
                         largest_limit,
+                        file_types,
                         progress,
                         app_handle,
                         client_scan_id,
@@ -238,6 +251,20 @@ fn scan_path(
         is_dir: true,
         children,
     })
+}
+
+fn track_file_type(path: &Path, size: u64, file_types: &mut HashMap<String, (u64, usize)>) {
+    let kind = file_type_bucket(path);
+    let entry = file_types.entry(kind).or_insert((0, 0));
+    entry.0 += size;
+    entry.1 += 1;
+}
+
+fn file_type_bucket(path: &Path) -> String {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if !ext.trim().is_empty() => ext.to_ascii_lowercase(),
+        _ => String::from("(no extension)"),
+    }
 }
 
 fn maybe_add_largest_file(files: &mut Vec<LargestFile>, limit: usize, candidate: LargestFile) {
@@ -309,10 +336,11 @@ async fn scan_directory(
     let latest_scan_id = Arc::clone(&state.latest_scan_id);
     let app_handle_for_scan = app_handle.clone();
 
-    let (full_root, mut largest_files, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
+    let (full_root, mut largest_files, file_types, stats, elapsed_ms) = tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
         let mut stats = ScanStats::default();
         let mut largest_files = Vec::<LargestFile>::with_capacity(largest_limit);
+        let mut file_types = HashMap::<String, (u64, usize)>::new();
         let mut progress = ProgressState::default();
         let full_root = scan_path(
             Path::new(&root_path),
@@ -320,6 +348,7 @@ async fn scan_directory(
             &mut stats,
             &mut largest_files,
             largest_limit,
+            &mut file_types,
             &mut progress,
             Some(&app_handle_for_scan),
             client_scan_id,
@@ -342,9 +371,10 @@ async fn scan_directory(
             },
         );
         let elapsed_ms = started.elapsed().as_millis();
-        Ok::<(DiskNode, Vec<LargestFile>, ScanStats, u128), String>((
+        Ok::<(DiskNode, Vec<LargestFile>, HashMap<String, (u64, usize)>, ScanStats, u128), String>((
             full_root,
             largest_files,
+            file_types,
             stats,
             elapsed_ms,
         ))
@@ -353,10 +383,16 @@ async fn scan_directory(
     .map_err(|e| e.to_string())??;
 
     largest_files.sort_by(|a, b| b.size.cmp(&a.size));
+    let mut file_types = file_types
+        .into_iter()
+        .map(|(kind, (bytes, files))| FileTypeStat { kind, bytes, files })
+        .collect::<Vec<_>>();
+    file_types.sort_by(|a, b| b.bytes.cmp(&a.bytes));
 
     Ok(ScanResult {
         root: prune_for_display(&full_root, 0, display_depth),
         largest_files,
+        file_types,
         nodes: stats.nodes,
         files: stats.files,
         dirs: stats.dirs,
@@ -486,6 +522,7 @@ mod tests {
             &mut stats,
             &mut Vec::new(),
             50,
+            &mut HashMap::new(),
             &mut progress,
             None,
             1,
@@ -517,6 +554,7 @@ mod tests {
             &mut stats,
             &mut Vec::new(),
             50,
+            &mut HashMap::new(),
             &mut progress,
             None,
             1,
@@ -546,6 +584,7 @@ mod tests {
             &mut stats,
             &mut Vec::new(),
             50,
+            &mut HashMap::new(),
             &mut progress,
             None,
             1,
@@ -583,6 +622,7 @@ mod tests {
             &mut stats,
             &mut Vec::new(),
             50,
+            &mut HashMap::new(),
             &mut progress,
             None,
             1,
@@ -621,6 +661,7 @@ mod tests {
             &mut stats,
             &mut Vec::new(),
             50,
+            &mut HashMap::new(),
             &mut progress,
             None,
             1,
@@ -650,6 +691,7 @@ mod tests {
             &mut stats,
             &mut Vec::new(),
             50,
+            &mut HashMap::new(),
             &mut progress,
             None,
             1,
