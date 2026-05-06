@@ -1,8 +1,8 @@
-# disk-map
+# Disk Map
 
-`disk-map` is a Tauri v2 desktop starter app inspired by DaisyDisk.
+Disk Map is a Tauri v2 desktop storage scanner and cleanup tool inspired by DaisyDisk.
 
-It scans a directory and returns a recursive tree of file/folder sizes, then renders the result in an expandable React UI.
+It scans folders and volumes, maps file/folder sizes, previews items, stages cleanup candidates, and can move selected items to Trash or permanently delete them after confirmation.
 
 ## Stack
 

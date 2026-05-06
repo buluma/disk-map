@@ -3,11 +3,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 import {
+  addCollectorItem,
+  availableIncludingPurgeable,
   clampDepth,
+  collectorRisks,
+  collectorSummary,
+  filterTreeByFileType,
+  hasPermanentDeleteBlocker,
+  otherHiddenBytes,
   findPathToNode,
   filterTree,
   formatBytes,
   parseExcludePatterns,
+  removeCollectorItem,
+  usedPercent,
+  type CollectorItem,
   type DiskNode,
 } from "./utils";
 
@@ -15,6 +25,9 @@ type ScanResult = {
   root: DiskNode;
   largestFiles: LargestFile[];
   fileTypes: FileTypeStat[];
+  skippedPaths: SkippedPath[];
+  hiddenBytes?: number | null;
+  purgeableBytes?: number | null;
   nodes: number;
   files: number;
   dirs: number;
@@ -37,30 +50,56 @@ type FileTypeStat = {
   files: number;
 };
 
+type SkippedPath = {
+  path: string;
+  reason: string;
+};
+
 type VolumeInfo = {
   name: string;
   path: string;
   totalBytes: number;
   usedBytes: number;
   availableBytes: number;
+  availableIncludingPurgeableBytes: number;
+  purgeableBytes?: number | null;
 };
 
 type ScanStatus = "idle" | "scanning" | "success" | "canceled" | "error";
 
 type ScanProgress = {
   clientScanId: number;
+  rootPath: string;
   entriesScanned: number;
   dirsScanned: number;
   bytesAccumulated: number;
   elapsedMs: number;
 };
 
+type ScanSession = {
+  clientScanId: number;
+  rootPath: string;
+  status: ScanStatus;
+  progress: ScanProgress;
+};
+
+type PathInspection = {
+  exists: boolean;
+  isSymlink: boolean;
+  isDir: boolean;
+};
+
+type CollectorAction = "trash" | "permanent";
+
 const STORAGE_KEYS = {
   path: "disk-map:path",
   maxDepth: "disk-map:max-depth",
   filterQuery: "disk-map:filter-query",
   excludes: "disk-map:excludes",
+  favorites: "disk-map:favorites",
 } as const;
+
+const PATH_SUGGESTIONS = ["/Users/shadowwalker/Documents/GitHub"] as const;
 
 function highlightMatch(text: string, query: string): ReactNode {
   let q = query.trim();
@@ -91,16 +130,18 @@ function NodeView({
   filterQuery,
   onFocusDirectory,
   onReveal,
+  onPreview,
   onOpen,
-  onTrash,
+  onCollect,
 }: {
   node: DiskNode;
   level?: number;
   filterQuery: string;
   onFocusDirectory: (path: string) => void;
   onReveal: (path: string) => Promise<void>;
+  onPreview: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
-  onTrash: (path: string) => Promise<void>;
+  onCollect: (node: DiskNode) => void;
 }) {
   let [open, setOpen] = useState(level < 1);
   let hasChildren = node.children.length > 0;
@@ -133,11 +174,14 @@ function NodeView({
         <button className="action-btn" onClick={() => onReveal(node.path)} title={`Reveal ${node.path}`}>
           Reveal
         </button>
+        <button className="action-btn" onClick={() => onPreview(node.path)} title={`Preview ${node.path}`}>
+          Preview
+        </button>
         <button className="action-btn" onClick={() => onOpen(node.path)} title={`Open ${node.path}`}>
           Open
         </button>
-        <button className="action-btn danger" onClick={() => onTrash(node.path)} title={`Move ${node.path} to Trash`}>
-          Trash
+        <button className="action-btn danger" onClick={() => onCollect(node)} title={`Collect ${node.path}`}>
+          Collect
         </button>
       </div>
 
@@ -150,8 +194,9 @@ function NodeView({
             filterQuery={filterQuery}
             onFocusDirectory={onFocusDirectory}
             onReveal={onReveal}
+            onPreview={onPreview}
             onOpen={onOpen}
-            onTrash={onTrash}
+            onCollect={onCollect}
           />
         ))}
     </div>
@@ -163,15 +208,17 @@ function TopLargest({
   limit = 8,
   onFocusDirectory,
   onReveal,
+  onPreview,
   onOpen,
-  onTrash,
+  onCollect,
 }: {
   root: DiskNode;
   limit?: number;
   onFocusDirectory: (path: string) => void;
   onReveal: (path: string) => Promise<void>;
+  onPreview: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
-  onTrash: (path: string) => Promise<void>;
+  onCollect: (node: DiskNode) => void;
 }) {
   let largest = [...root.children].sort((a, b) => b.size - a.size).slice(0, limit);
   let [open, setOpen] = useState(true);
@@ -210,11 +257,14 @@ function TopLargest({
               <button className="action-btn" onClick={() => onReveal(item.path)} title={`Reveal ${item.path}`}>
                 Reveal
               </button>
+              <button className="action-btn" onClick={() => onPreview(item.path)} title={`Preview ${item.path}`}>
+                Preview
+              </button>
               <button className="action-btn" onClick={() => onOpen(item.path)} title={`Open ${item.path}`}>
                 Open
               </button>
-              <button className="action-btn danger" onClick={() => onTrash(item.path)} title={`Move ${item.path} to Trash`}>
-                Trash
+              <button className="action-btn danger" onClick={() => onCollect(item)} title={`Collect ${item.path}`}>
+                Collect
               </button>
             </div>
           ))}
@@ -228,15 +278,17 @@ function GlobalLargestFiles({
   files,
   onFocusDirectory,
   onReveal,
+  onPreview,
   onOpen,
-  onTrash,
+  onCollect,
   limit = 20,
 }: {
   files: LargestFile[];
   onFocusDirectory: (path: string) => void;
   onReveal: (path: string) => Promise<void>;
+  onPreview: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
-  onTrash: (path: string) => Promise<void>;
+  onCollect: (item: CollectorItem) => void;
   limit?: number;
 }) {
   let topFiles = files.slice(0, limit);
@@ -271,11 +323,18 @@ function GlobalLargestFiles({
               <button className="action-btn" onClick={() => onReveal(file.path)} title={`Reveal ${file.path}`}>
                 Reveal
               </button>
+              <button className="action-btn" onClick={() => onPreview(file.path)} title={`Preview ${file.path}`}>
+                Preview
+              </button>
               <button className="action-btn" onClick={() => onOpen(file.path)} title={`Open ${file.path}`}>
                 Open
               </button>
-              <button className="action-btn danger" onClick={() => onTrash(file.path)} title={`Move ${file.path} to Trash`}>
-                Trash
+              <button
+                className="action-btn danger"
+                onClick={() => onCollect({ name: file.name, path: file.path, size: file.size, isDir: false })}
+                title={`Collect ${file.path}`}
+              >
+                Collect
               </button>
             </div>
           ))}
@@ -285,7 +344,17 @@ function GlobalLargestFiles({
   );
 }
 
-function FileTypeBreakdown({ fileTypes, limit = 12 }: { fileTypes: FileTypeStat[]; limit?: number }) {
+function FileTypeBreakdown({
+  fileTypes,
+  selectedType,
+  onSelect,
+  limit = 12,
+}: {
+  fileTypes: FileTypeStat[];
+  selectedType: string | null;
+  onSelect: (kind: string | null) => void;
+  limit?: number;
+}) {
   let top = fileTypes.slice(0, limit);
   let [open, setOpen] = useState(true);
   if (!top.length) return null;
@@ -303,12 +372,278 @@ function FileTypeBreakdown({ fileTypes, limit = 12 }: { fileTypes: FileTypeStat[
           {top.map((entry) => (
             <div className="summary-row" key={entry.kind}>
               <span className="type-pill file">{entry.kind}</span>
-              <span className="summary-name">{entry.files} files</span>
+              <button
+                className="summary-link"
+                onClick={() => onSelect(selectedType === entry.kind ? null : entry.kind)}
+              >
+                {entry.files} files
+              </button>
               <span className="size">{formatBytes(entry.bytes)}</span>
+            </div>
+          ))}
+          {selectedType && (
+            <div className="summary-row total-row">
+              <span className="summary-name">Filtering by .{selectedType}</span>
+              <button className="action-btn" onClick={() => onSelect(null)}>
+                Clear filter
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function HiddenSpacePanel({
+  result,
+  reclaiming,
+  onReclaim,
+}: {
+  result: ScanResult;
+  reclaiming: boolean;
+  onReclaim: () => Promise<void>;
+}) {
+  let otherHidden = otherHiddenBytes(result.hiddenBytes, result.purgeableBytes);
+
+  if (result.hiddenBytes === undefined && result.purgeableBytes === undefined) return null;
+
+  return (
+    <section className="summary">
+      <div className="summary-head">
+        <h2>Hidden Space</h2>
+        <button
+          className="collapse-btn"
+          onClick={onReclaim}
+          disabled={reclaiming || !result.purgeableBytes || result.purgeableBytes <= 0}
+        >
+          {reclaiming ? "Reclaiming..." : "Reclaim Purgeable"}
+        </button>
+      </div>
+      <div className="summary-list">
+        <div className="summary-row">
+          <span className="type-pill dir">HID</span>
+          <span className="summary-name">Total hidden/restricted</span>
+          <span className="size">
+            {result.hiddenBytes === undefined || result.hiddenBytes === null
+              ? "Unavailable"
+              : formatBytes(result.hiddenBytes)}
+          </span>
+        </div>
+        <div className="summary-row">
+          <span className="type-pill file">PUR</span>
+          <span className="summary-name">Purgeable space</span>
+          <span className="size">
+            {result.purgeableBytes === undefined || result.purgeableBytes === null
+              ? "Unavailable"
+              : formatBytes(result.purgeableBytes)}
+          </span>
+        </div>
+        <div className="summary-row">
+          <span className="type-pill file">OTH</span>
+          <span className="summary-name">Other hidden/restricted</span>
+          <span className="size">{otherHidden === null ? "Unavailable" : formatBytes(otherHidden)}</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CollectorPanel({
+  items,
+  onRemove,
+  onClear,
+  onMoveToTrash,
+  onPermanentDelete,
+  homePath,
+}: {
+  items: CollectorItem[];
+  onRemove: (path: string) => void;
+  onClear: () => void;
+  onMoveToTrash: () => void;
+  onPermanentDelete: () => void;
+  homePath?: string;
+}) {
+  let total = items.reduce((sum, item) => sum + item.size, 0);
+  let risks = collectorRisks(items, homePath);
+  let permanentDeleteBlocked = hasPermanentDeleteBlocker(risks);
+
+  if (!items.length) return null;
+
+  return (
+    <section className="summary collector">
+      <div className="summary-head">
+        <h2>Collector ({items.length})</h2>
+        <div className="button-row">
+          <button className="collapse-btn" onClick={onClear}>
+            Clear
+          </button>
+          <button className="collapse-btn" onClick={onMoveToTrash}>
+            Move to Trash
+          </button>
+          <button className="collapse-btn danger" onClick={onPermanentDelete} disabled={permanentDeleteBlocked}>
+            Delete Permanently
+          </button>
+        </div>
+      </div>
+      <div className="summary-list">
+        {risks.length > 0 && (
+          <div className="collector-risks">
+            {risks.map((risk, index) => (
+              <div className={`collector-risk ${risk.severity}`} key={`${risk.path}-${index}`}>
+                <strong>{risk.severity === "blocker" ? "Blocked" : "Warning"}</strong>
+                <span title={risk.path}>{risk.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {items.map((item) => (
+          <div className="summary-row" key={item.path}>
+            <span className={`type-pill ${item.isDir ? "dir" : "file"}`}>
+              {item.isDir ? "DIR" : "FILE"}
+            </span>
+            <span className="summary-name" title={item.path}>
+              {item.name}
+            </span>
+            <span className="size">{formatBytes(item.size)}</span>
+            <button className="action-btn" onClick={() => onRemove(item.path)}>
+              Remove
+            </button>
+          </div>
+        ))}
+        <div className="summary-row total-row">
+          <span className="summary-name">Total selected</span>
+          <span className="size">{formatBytes(total)}</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CollectorDryRunModal({
+  action,
+  items,
+  homePath,
+  deleteConfirmation,
+  onDeleteConfirmationChange,
+  onCancel,
+  onConfirm,
+}: {
+  action: CollectorAction;
+  items: CollectorItem[];
+  homePath: string;
+  deleteConfirmation: string;
+  onDeleteConfirmationChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  let summary = collectorSummary(items);
+  let risks = collectorRisks(items, homePath);
+  let blockers = risks.filter((risk) => risk.severity === "blocker");
+  let permanent = action === "permanent";
+  let disabled = permanent && (deleteConfirmation !== "DELETE" || blockers.length > 0);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal" role="dialog" aria-modal="true" aria-label="Collector dry run summary">
+        <div className="summary-head">
+          <h2>{permanent ? "Delete Permanently" : "Move to Trash"}</h2>
+          <button className="collapse-btn" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+        <div className="dry-run-body">
+          <div className="dry-run-grid">
+            <span>Files: {summary.files}</span>
+            <span>Folders: {summary.folders}</span>
+            <span>Total: {formatBytes(summary.bytes)}</span>
+            <span>Warnings: {risks.length}</span>
+          </div>
+          {risks.length > 0 && (
+            <div className="collector-risks">
+              {risks.map((risk, index) => (
+                <div className={`collector-risk ${risk.severity}`} key={`${risk.path}-${index}`}>
+                  <strong>{risk.severity === "blocker" ? "Blocked" : "Warning"}</strong>
+                  <span title={risk.path}>{risk.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="dry-run-paths">
+            {items.map((item) => (
+              <div key={item.path} title={item.path}>
+                {item.path}
+              </div>
+            ))}
+          </div>
+          {permanent && (
+            <input
+              value={deleteConfirmation}
+              onChange={(event) => onDeleteConfirmationChange(event.target.value)}
+              placeholder="Type DELETE"
+              spellCheck={false}
+            />
+          )}
+          <button className={permanent ? "danger-action" : "primary-action"} onClick={onConfirm} disabled={disabled}>
+            {permanent ? "Delete Permanently" : "Move to Trash"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SkippedPathsPanel({ paths }: { paths: SkippedPath[] }) {
+  let [open, setOpen] = useState(false);
+  if (!paths.length) return null;
+
+  return (
+    <section className="summary">
+      <div className="summary-head">
+        <h2>Skipped Paths</h2>
+        <button className="collapse-btn" onClick={() => setOpen((value) => !value)}>
+          {open ? "Collapse" : `Expand (${paths.length})`}
+        </button>
+      </div>
+      {open && (
+        <div className="summary-list">
+          {paths.map((entry) => (
+            <div className="summary-row" key={`${entry.reason}-${entry.path}`}>
+              <span className="type-pill file">SKIP</span>
+              <span className="summary-name" title={entry.path}>
+                {entry.path}
+              </span>
+              <span className="size">{entry.reason}</span>
             </div>
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+function ScanSessionsPanel({ sessions }: { sessions: ScanSession[] }) {
+  if (!sessions.length) return null;
+
+  return (
+    <section className="scan-progress">
+      <div className="progress-head">
+        <strong>Scan Sessions</strong>
+        <span>{sessions.length}</span>
+      </div>
+      <div className="session-list">
+        {sessions.map((session) => (
+          <div className="session-row" key={session.clientScanId}>
+            <span className="summary-name" title={session.rootPath}>
+              {session.rootPath}
+            </span>
+            <span>{session.status}</span>
+            <span>{session.progress.entriesScanned} entries</span>
+            <span>{formatBytes(session.progress.bytesAccumulated)}</span>
+            <span>{session.progress.elapsedMs} ms</span>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -494,9 +829,16 @@ export default function App() {
   let [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   let [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
+  let [scanSessions, setScanSessions] = useState<ScanSession[]>([]);
   let [volumes, setVolumes] = useState<VolumeInfo[]>([]);
   let [volumesOpen, setVolumesOpen] = useState(false);
   let [treeOpen, setTreeOpen] = useState(true);
+  let [collectorItems, setCollectorItems] = useState<CollectorItem[]>([]);
+  let [favorites, setFavorites] = useState<string[]>([]);
+  let [reclaiming, setReclaiming] = useState(false);
+  let [fileTypeFilter, setFileTypeFilter] = useState<string | null>(null);
+  let [pendingCollectorAction, setPendingCollectorAction] = useState<CollectorAction | null>(null);
+  let [deleteConfirmation, setDeleteConfirmation] = useState("");
   let fullTree = scanResult?.root ?? null;
   let focusChain = fullTree
     ? focusedPath
@@ -504,7 +846,8 @@ export default function App() {
       : [fullTree]
     : null;
   let currentRoot = focusChain?.[focusChain.length - 1] ?? fullTree;
-  let filteredTree = currentRoot ? filterTree(currentRoot, filterQuery) : null;
+  let typeFilteredTree = currentRoot ? filterTreeByFileType(currentRoot, fileTypeFilter) : null;
+  let filteredTree = typeFilteredTree ? filterTree(typeFilteredTree, filterQuery) : null;
 
   useEffect(() => {
     let storedPath = localStorage.getItem(STORAGE_KEYS.path);
@@ -528,6 +871,18 @@ export default function App() {
     let storedExcludes = localStorage.getItem(STORAGE_KEYS.excludes);
     if (storedExcludes !== null) {
       setExcludeInput(storedExcludes);
+    }
+
+    let storedFavorites = localStorage.getItem(STORAGE_KEYS.favorites);
+    if (storedFavorites) {
+      try {
+        let parsed = JSON.parse(storedFavorites);
+        if (Array.isArray(parsed)) {
+          setFavorites(parsed.filter((value): value is string => typeof value === "string"));
+        }
+      } catch {
+        setFavorites([]);
+      }
     }
   }, []);
 
@@ -566,6 +921,14 @@ export default function App() {
   }, [excludeInput]);
 
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(favorites));
+  }, [favorites]);
+
+  useEffect(() => {
+    setLoading(scanSessions.some((session) => session.status === "scanning"));
+  }, [scanSessions]);
+
+  useEffect(() => {
     let unlisten: UnlistenFn | null = null;
     listen<ScanProgress>("scan-progress", (event) => {
       let progress = event.payload;
@@ -574,6 +937,13 @@ export default function App() {
         if (progress.clientScanId !== activeClientScanId) return prev;
         return progress;
       });
+      setScanSessions((prev) =>
+        prev.map((session) =>
+          session.clientScanId === progress.clientScanId
+            ? { ...session, progress, status: "scanning" }
+            : session,
+        ),
+      );
     })
       .then((fn) => {
         unlisten = fn;
@@ -589,8 +959,13 @@ export default function App() {
     };
   }, [activeClientScanId]);
 
-  async function scan() {
-    if (loading) return;
+  async function scan(targetOverride?: string) {
+    let targetPath = (targetOverride ?? path).trim();
+    if (!targetPath) return;
+    if (scanSessions.some((session) => session.rootPath === targetPath && session.status === "scanning")) {
+      setError(`A scan is already running for ${targetPath}`);
+      return;
+    }
 
     let clientScanId = Date.now();
     setLoading(true);
@@ -600,28 +975,60 @@ export default function App() {
     setActiveClientScanId(clientScanId);
     setScanProgress({
       clientScanId,
+      rootPath: targetPath,
       entriesScanned: 0,
       dirsScanned: 0,
       bytesAccumulated: 0,
       elapsedMs: 0,
     });
+    setScanSessions((prev) => [
+      {
+        clientScanId,
+        rootPath: targetPath,
+        status: "scanning",
+        progress: {
+          clientScanId,
+          rootPath: targetPath,
+          entriesScanned: 0,
+          dirsScanned: 0,
+          bytesAccumulated: 0,
+          elapsedMs: 0,
+        },
+      },
+      ...prev.filter((session) => session.rootPath !== targetPath).slice(0, 4),
+    ]);
 
     try {
       let result = await invoke<ScanResult>("scan_directory", {
-        path,
+        path: targetPath,
         maxDisplayDepth,
         excludes: parseExcludePatterns(excludeInput),
         clientScanId,
       });
       setScanResult(result);
       setScanStatus("success");
+      setScanSessions((prev) =>
+        prev.map((session) =>
+          session.clientScanId === clientScanId ? { ...session, status: "success" } : session,
+        ),
+      );
     } catch (err) {
       let message = String(err);
       if (message.includes("Scan canceled")) {
         setScanStatus("canceled");
+        setScanSessions((prev) =>
+          prev.map((session) =>
+            session.clientScanId === clientScanId ? { ...session, status: "canceled" } : session,
+          ),
+        );
       } else {
         setError(message);
         setScanStatus("error");
+        setScanSessions((prev) =>
+          prev.map((session) =>
+            session.clientScanId === clientScanId ? { ...session, status: "error" } : session,
+          ),
+        );
       }
     }
 
@@ -678,31 +1085,145 @@ export default function App() {
     }
   }
 
-  async function moveToTrash(targetPath: string) {
-    let ok = window.confirm(`Move this item to Trash?\n\n${targetPath}`);
-    if (!ok) return;
+  async function previewPath(targetPath: string) {
     try {
-      await invoke("move_to_trash", { path: targetPath });
-      setScanResult((prev) => {
-        if (!prev || prev.root.path === targetPath) return prev;
-        return {
-          ...prev,
-          root: removeNodeByPath(prev.root, targetPath),
-          largestFiles: prev.largestFiles.filter((item) => item.path !== targetPath),
-        };
-      });
-      if (focusedPath === targetPath) {
-        setFocusedPath(null);
-      }
+      await invoke("preview_path", { path: targetPath });
     } catch (err) {
       setError(String(err));
     }
   }
 
+  async function inspectCollectorItem(item: CollectorItem): Promise<CollectorItem> {
+    try {
+      let inspection = await invoke<PathInspection>("inspect_path", { path: item.path });
+      return {
+        ...item,
+        exists: inspection.exists,
+        isSymlink: inspection.isSymlink,
+        isDir: inspection.isDir,
+      };
+    } catch {
+      return item;
+    }
+  }
+
+  async function collectNode(node: DiskNode) {
+    let item = await inspectCollectorItem({
+      name: node.name,
+      path: node.path,
+      size: node.size,
+      isDir: node.is_dir,
+    });
+    setCollectorItems((prev) =>
+      addCollectorItem(prev, item),
+    );
+  }
+
+  async function collectItem(item: CollectorItem) {
+    let inspected = await inspectCollectorItem(item);
+    setCollectorItems((prev) => addCollectorItem(prev, inspected));
+  }
+
+  function requestCollectorCommit(action: CollectorAction) {
+    if (action === "permanent") {
+      let risks = collectorRisks(collectorItems, "/Users/shadowwalker");
+      if (hasPermanentDeleteBlocker(risks)) {
+        setError("Permanent delete is blocked until critical or missing Collector items are removed.");
+        return;
+      }
+    }
+    setDeleteConfirmation("");
+    setPendingCollectorAction(action);
+  }
+
+  async function commitCollector(action: CollectorAction) {
+    let permanent = action === "permanent";
+    let risks = collectorRisks(collectorItems, "/Users/shadowwalker");
+    if (permanent && hasPermanentDeleteBlocker(risks)) {
+      setError("Permanent delete is blocked until critical or missing Collector items are removed.");
+      return;
+    }
+    let commandName = permanent ? "permanently_delete_path" : "move_to_trash";
+
+    let failed: string[] = [];
+    let succeeded: string[] = [];
+    for (let item of collectorItems) {
+      try {
+        await invoke(commandName, { path: item.path });
+        succeeded.push(item.path);
+      } catch (err) {
+        failed.push(`${item.path}: ${String(err)}`);
+      }
+    }
+
+    if (succeeded.length > 0) {
+      setScanResult((prev) => {
+        if (!prev) return prev;
+        let nextRoot = succeeded.reduce((root, targetPath) => removeNodeByPath(root, targetPath), prev.root);
+        return {
+          ...prev,
+          root: nextRoot,
+          largestFiles: prev.largestFiles.filter((item) => !succeeded.includes(item.path)),
+        };
+      });
+      if (focusedPath && succeeded.includes(focusedPath)) {
+        setFocusedPath(null);
+      }
+      setCollectorItems((prev) => prev.filter((item) => !succeeded.includes(item.path)));
+    }
+
+    if (failed.length > 0) {
+      let action = permanent ? "permanently deleted" : "moved to Trash";
+      setError(`Some items could not be ${action}:\n${failed.join("\n")}`);
+    }
+    setPendingCollectorAction(null);
+    setDeleteConfirmation("");
+  }
+
+  async function reclaimPurgeable() {
+    if (!scanResult) return;
+    let ok = window.confirm(
+      "Reclaim purgeable space for this volume?\n\nThis can take time, and macOS may not reclaim every byte immediately.",
+    );
+    if (!ok) return;
+    setReclaiming(true);
+    setError("");
+    try {
+      await invoke("reclaim_purgeable_space", { path: scanResult.root.path });
+      for (let i = 0; i < 6; i += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        let purgeableBytes = await invoke<number | null>("get_purgeable_space", {
+          path: scanResult.root.path,
+        });
+        setScanResult((prev) => (prev ? { ...prev, purgeableBytes } : prev));
+      }
+      await refreshVolumes();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setReclaiming(false);
+    }
+  }
+
+  function toggleFavorite() {
+    let targetPath = path.trim();
+    if (!targetPath) return;
+    setFavorites((prev) =>
+      prev.includes(targetPath)
+        ? prev.filter((favorite) => favorite !== targetPath)
+        : [...prev, targetPath],
+    );
+  }
+
+  function scanFavorite(favorite: string) {
+    setPath(favorite);
+    void scan(favorite);
+  }
+
   return (
     <main className="app">
-      <h1>disk-map</h1>
-      <p className="subtitle">Recursive scanner with expandable tree view</p>
+      <h1>Disk Map</h1>
+      <p className="subtitle">Find, preview, and clean up local storage.</p>
 
       <div className="toolbar">
         <select
@@ -742,16 +1263,39 @@ export default function App() {
         <button onClick={chooseFolder} disabled={loading}>
           Choose Folder
         </button>
+        <button onClick={toggleFavorite} disabled={!path.trim()}>
+          {favorites.includes(path.trim()) ? "Unstar" : "Star"}
+        </button>
         <button onClick={refreshVolumes} disabled={loading}>
           Refresh Volumes
         </button>
         <button onClick={cancelScan} disabled={!loading}>
           Cancel
         </button>
-        <button onClick={scan} disabled={loading}>
-          {loading ? "Scanning..." : "Scan"}
+        <button onClick={() => scan()}>
+          Scan
         </button>
       </div>
+
+      {(PATH_SUGGESTIONS.length > 0 || favorites.length > 0) && (
+        <section className="favorites">
+          {PATH_SUGGESTIONS.map((suggestedPath) => (
+            <button
+              key={suggestedPath}
+              className="favorite-chip"
+              onClick={() => setPath(suggestedPath)}
+              title={suggestedPath}
+            >
+              {suggestedPath}
+            </button>
+          ))}
+          {favorites.map((favorite) => (
+            <button key={favorite} className="favorite-chip" onClick={() => scanFavorite(favorite)} title={favorite}>
+              {favorite}
+            </button>
+          ))}
+        </section>
+      )}
 
       <p className="scan-status">
         Status:{" "}
@@ -783,21 +1327,6 @@ export default function App() {
 
       {error && <p className="error">{error}</p>}
 
-      {focusChain && focusChain.length > 0 && (
-        <section className="breadcrumbs">
-          {focusChain.map((node, index) => (
-            <button
-              key={node.path}
-              onClick={() => setFocusedPath(node.path)}
-              className={index === focusChain.length - 1 ? "crumb active" : "crumb"}
-              title={node.path}
-            >
-              {node.name || "/"}
-            </button>
-          ))}
-        </section>
-      )}
-
       {scanResult && (
         <section className="scan-metrics">
           <span>Total size: {formatBytes(scanResult.root.size)}</span>
@@ -823,17 +1352,64 @@ export default function App() {
           </div>
         </section>
       )}
+      <ScanSessionsPanel sessions={scanSessions} />
+      <CollectorPanel
+        items={collectorItems}
+        onRemove={(targetPath) => setCollectorItems((prev) => removeCollectorItem(prev, targetPath))}
+        onClear={() => setCollectorItems([])}
+        onMoveToTrash={() => requestCollectorCommit("trash")}
+        onPermanentDelete={() => requestCollectorCommit("permanent")}
+        homePath="/Users/shadowwalker"
+      />
+      {pendingCollectorAction && (
+        <CollectorDryRunModal
+          action={pendingCollectorAction}
+          items={collectorItems}
+          homePath="/Users/shadowwalker"
+          deleteConfirmation={deleteConfirmation}
+          onDeleteConfirmationChange={setDeleteConfirmation}
+          onCancel={() => {
+            setPendingCollectorAction(null);
+            setDeleteConfirmation("");
+          }}
+          onConfirm={() => commitCollector(pendingCollectorAction)}
+        />
+      )}
+      {scanResult && <HiddenSpacePanel result={scanResult} reclaiming={reclaiming} onReclaim={reclaimPurgeable} />}
 
       {filteredTree && (
         <>
+          {focusChain && focusChain.length > 0 && (
+            <section className="breadcrumbs">
+              {focusChain.map((node, index) => (
+                <button
+                  key={node.path}
+                  onClick={() => setFocusedPath(node.path)}
+                  className={index === focusChain.length - 1 ? "crumb active" : "crumb"}
+                  title={node.path}
+                >
+                  {node.name || "/"}
+                </button>
+              ))}
+            </section>
+          )}
           <SunburstMap root={filteredTree} onFocusDirectory={onFocusDirectory} />
-          <FileTypeBreakdown fileTypes={scanResult?.fileTypes ?? []} />
+          {fileTypeFilter && (
+            <p className="scan-status">File type filter: {fileTypeFilter}</p>
+          )}
+          <FileTypeBreakdown
+            fileTypes={scanResult?.fileTypes ?? []}
+            selectedType={fileTypeFilter}
+            onSelect={setFileTypeFilter}
+          />
+          <SkippedPathsPanel paths={scanResult?.skippedPaths ?? []} />
           <TopLargest
             root={filteredTree}
             onFocusDirectory={onFocusDirectory}
             onReveal={revealInFinder}
+            onPreview={previewPath}
             onOpen={openPath}
-            onTrash={moveToTrash}
+            onCollect={collectNode}
           />
           <section className="summary">
             <div className="summary-head">
@@ -849,8 +1425,9 @@ export default function App() {
                   filterQuery={filterQuery}
                   onFocusDirectory={onFocusDirectory}
                   onReveal={revealInFinder}
+                  onPreview={previewPath}
                   onOpen={openPath}
-                  onTrash={moveToTrash}
+                  onCollect={collectNode}
                 />
               </section>
             )}
@@ -866,8 +1443,9 @@ export default function App() {
         files={scanResult?.largestFiles ?? []}
         onFocusDirectory={onFocusDirectory}
         onReveal={revealInFinder}
+        onPreview={previewPath}
         onOpen={openPath}
-        onTrash={moveToTrash}
+        onCollect={collectItem}
       />
 
       {volumes.length > 0 && (
@@ -886,8 +1464,22 @@ export default function App() {
                   <button className="summary-link" onClick={() => setPath(volume.path)} title={volume.path}>
                     {volume.name}
                   </button>
-                  <span className="size">Used: {formatBytes(volume.usedBytes)}</span>
-                  <span className="size">Free: {formatBytes(volume.availableBytes)}</span>
+                  <span className="size">
+                    Used: {usedPercent(volume.totalBytes, volume.usedBytes).toFixed(1)}%
+                  </span>
+                  <span className="size">
+                    Free:{" "}
+                    {formatBytes(
+                      volume.availableIncludingPurgeableBytes ??
+                        availableIncludingPurgeable(volume.availableBytes, volume.purgeableBytes),
+                    )}
+                  </span>
+                  <span className="size">
+                    Purgeable:{" "}
+                    {volume.purgeableBytes === undefined || volume.purgeableBytes === null
+                      ? "Unavailable"
+                      : formatBytes(volume.purgeableBytes)}
+                  </span>
                   <span className="size">Total: {formatBytes(volume.totalBytes)}</span>
                 </div>
               ))}

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172033"/>
+      <stop offset="0.55" stop-color="#101722"/>
+      <stop offset="1" stop-color="#0a0d12"/>
+    </linearGradient>
+    <linearGradient id="ringA" x1="250" y1="194" x2="768" y2="826" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6fd6c6"/>
+      <stop offset="1" stop-color="#4d76ff"/>
+    </linearGradient>
+    <linearGradient id="ringB" x1="248" y1="226" x2="760" y2="764" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4c76a"/>
+      <stop offset="1" stop-color="#ec5d65"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="332" fill="none" stroke="#25354f" stroke-width="42"/>
+  <path d="M512 180a332 332 0 0 1 298 478" fill="none" stroke="url(#ringA)" stroke-width="72" stroke-linecap="round"/>
+  <path d="M810 658A332 332 0 0 1 276 744" fill="none" stroke="url(#ringB)" stroke-width="72" stroke-linecap="round"/>
+  <path d="M276 744A332 332 0 0 1 314 266" fill="none" stroke="#8da2cc" stroke-width="72" stroke-linecap="round" opacity="0.82"/>
+  <circle cx="512" cy="512" r="150" fill="#101722" stroke="#2e405f" stroke-width="28"/>
+  <path d="M512 384v256" stroke="#eaf1ff" stroke-width="52" stroke-linecap="round"/>
+  <path d="M384 512h256" stroke="#eaf1ff" stroke-width="52" stroke-linecap="round"/>
+</svg>

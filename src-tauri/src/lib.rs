@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
 use tauri::State;
@@ -25,6 +25,9 @@ struct ScanResult {
     root: DiskNode,
     largest_files: Vec<LargestFile>,
     file_types: Vec<FileTypeStat>,
+    skipped_paths: Vec<SkippedPath>,
+    hidden_bytes: Option<u64>,
+    purgeable_bytes: Option<u64>,
     nodes: usize,
     files: usize,
     dirs: usize,
@@ -53,16 +56,35 @@ struct FileTypeStat {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct SkippedPath {
+    path: String,
+    reason: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct VolumeInfo {
     name: String,
     path: String,
     total_bytes: u64,
     used_bytes: u64,
     available_bytes: u64,
+    available_including_purgeable_bytes: u64,
+    purgeable_bytes: Option<u64>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PathInspection {
+    exists: bool,
+    is_symlink: bool,
+    is_dir: bool,
 }
 
 struct AppState {
-    latest_scan_id: Arc<AtomicU64>,
+    next_scan_id: Arc<AtomicU64>,
+    active_scans: Arc<Mutex<HashMap<String, u64>>>,
+    cancel_generation: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -76,6 +98,7 @@ struct ProgressState {
 #[serde(rename_all = "camelCase")]
 struct ScanProgress {
     client_scan_id: u64,
+    root_path: String,
     entries_scanned: usize,
     dirs_scanned: usize,
     bytes_accumulated: u64,
@@ -90,6 +113,7 @@ struct ScanStats {
     skipped: usize,
     permission_denied: usize,
     errors: usize,
+    skipped_paths: Vec<SkippedPath>,
 }
 
 #[derive(Debug)]
@@ -98,8 +122,20 @@ enum ScanError {
     Io(ErrorKind),
 }
 
-fn is_canceled(latest_scan_id: &AtomicU64, scan_id: u64) -> bool {
-    latest_scan_id.load(Ordering::Relaxed) != scan_id
+fn is_scan_canceled(
+    active_scans: &Mutex<HashMap<String, u64>>,
+    scan_key: &str,
+    scan_id: u64,
+    cancel_generation: &AtomicU64,
+    cancel_generation_at_start: u64,
+) -> bool {
+    if cancel_generation.load(Ordering::Relaxed) != cancel_generation_at_start {
+        return true;
+    }
+    match active_scans.lock() {
+        Ok(scans) => scans.get(scan_key).copied() != Some(scan_id),
+        Err(_) => true,
+    }
 }
 
 fn should_exclude(path: &Path, excludes: &[String]) -> bool {
@@ -118,8 +154,19 @@ fn should_exclude(path: &Path, excludes: &[String]) -> bool {
     })
 }
 
-fn record_skip(error_kind: Option<ErrorKind>, stats: &mut ScanStats) {
+fn record_skip(path: &Path, error_kind: Option<ErrorKind>, stats: &mut ScanStats) {
     stats.skipped += 1;
+    let reason = match error_kind {
+        Some(ErrorKind::PermissionDenied) => "Permission denied",
+        Some(_) => "Filesystem error",
+        None => "Excluded",
+    };
+    if stats.skipped_paths.len() < 100 {
+        stats.skipped_paths.push(SkippedPath {
+            path: path.to_string_lossy().to_string(),
+            reason: reason.to_string(),
+        });
+    }
     match error_kind {
         Some(ErrorKind::PermissionDenied) => stats.permission_denied += 1,
         Some(_) => stats.errors += 1,
@@ -137,11 +184,21 @@ fn scan_path(
     progress: &mut ProgressState,
     app_handle: Option<&tauri::AppHandle>,
     client_scan_id: u64,
+    root_path: &str,
     started: Instant,
-    latest_scan_id: &AtomicU64,
+    active_scans: &Mutex<HashMap<String, u64>>,
+    scan_key: &str,
+    cancel_generation: &AtomicU64,
+    cancel_generation_at_start: u64,
     scan_id: u64,
 ) -> Result<DiskNode, ScanError> {
-    if is_canceled(latest_scan_id, scan_id) {
+    if is_scan_canceled(
+        active_scans,
+        scan_key,
+        scan_id,
+        cancel_generation,
+        cancel_generation_at_start,
+    ) {
         return Err(ScanError::Canceled);
     }
 
@@ -164,6 +221,7 @@ fn scan_path(
                     "scan-progress",
                     ScanProgress {
                         client_scan_id,
+                        root_path: root_path.to_string(),
                         entries_scanned: progress.entries_scanned,
                         dirs_scanned: progress.dirs_scanned,
                         bytes_accumulated: progress.bytes_accumulated,
@@ -207,21 +265,27 @@ fn scan_path(
         match fs::read_dir(path) {
             Ok(entries) => {
                 for entry in entries {
-                    if is_canceled(latest_scan_id, scan_id) {
+                    if is_scan_canceled(
+                        active_scans,
+                        scan_key,
+                        scan_id,
+                        cancel_generation,
+                        cancel_generation_at_start,
+                    ) {
                         return Err(ScanError::Canceled);
                     }
 
                     let entry = match entry {
                         Ok(entry) => entry,
                         Err(err) => {
-                            record_skip(Some(err.kind()), stats);
+                            record_skip(path, Some(err.kind()), stats);
                             continue;
                         }
                     };
 
                     let child_path = entry.path();
                     if should_exclude(&child_path, excludes) {
-                        record_skip(None, stats);
+                        record_skip(&child_path, None, stats);
                         continue;
                     }
 
@@ -235,8 +299,12 @@ fn scan_path(
                         progress,
                         app_handle,
                         client_scan_id,
+                        root_path,
                         started,
-                        latest_scan_id,
+                        active_scans,
+                        scan_key,
+                        cancel_generation,
+                        cancel_generation_at_start,
                         scan_id,
                     ) {
                         Ok(child) => {
@@ -244,11 +312,11 @@ fn scan_path(
                             children.push(child);
                         }
                         Err(ScanError::Canceled) => return Err(ScanError::Canceled),
-                        Err(ScanError::Io(kind)) => record_skip(Some(kind), stats),
+                        Err(ScanError::Io(kind)) => record_skip(&child_path, Some(kind), stats),
                     }
                 }
             }
-            Err(err) => record_skip(Some(err.kind()), stats),
+            Err(err) => record_skip(path, Some(err.kind()), stats),
         }
     }
 
@@ -340,11 +408,22 @@ async fn scan_directory(
         .map(|v| v.trim().to_lowercase())
         .filter(|v| !v.is_empty())
         .collect();
-    let scan_id = state.latest_scan_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let scan_id = state.next_scan_id.fetch_add(1, Ordering::Relaxed) + 1;
     let client_scan_id = client_scan_id.unwrap_or(scan_id);
     let root_path = path.clone();
-    let latest_scan_id = Arc::clone(&state.latest_scan_id);
+    let scan_key = normalize_scan_key(&root_path);
+    let active_scans = Arc::clone(&state.active_scans);
+    let cancel_generation = Arc::clone(&state.cancel_generation);
+    let cancel_generation_at_start = cancel_generation.load(Ordering::Relaxed);
     let app_handle_for_scan = app_handle.clone();
+
+    {
+        let mut scans = state
+            .active_scans
+            .lock()
+            .map_err(|_| "Failed to lock scan state".to_string())?;
+        scans.insert(scan_key.clone(), scan_id);
+    }
 
     let (full_root, mut largest_files, file_types, stats, elapsed_ms) =
         tauri::async_runtime::spawn_blocking(move || {
@@ -363,8 +442,12 @@ async fn scan_directory(
                 &mut progress,
                 Some(&app_handle_for_scan),
                 client_scan_id,
+                &root_path,
                 started,
-                &latest_scan_id,
+                &active_scans,
+                &scan_key,
+                &cancel_generation,
+                cancel_generation_at_start,
                 scan_id,
             )
             .map_err(|err| match err {
@@ -375,6 +458,7 @@ async fn scan_directory(
                 "scan-progress",
                 ScanProgress {
                     client_scan_id,
+                    root_path: root_path.clone(),
                     entries_scanned: progress.entries_scanned,
                     dirs_scanned: progress.dirs_scanned,
                     bytes_accumulated: progress.bytes_accumulated,
@@ -396,17 +480,25 @@ async fn scan_directory(
         .await
         .map_err(|e| e.to_string())??;
 
+    clear_scan_if_current(&state.active_scans, &normalize_scan_key(&path), scan_id);
+
     largest_files.sort_by(|a, b| b.size.cmp(&a.size));
     let mut file_types = file_types
         .into_iter()
         .map(|(kind, (bytes, files))| FileTypeStat { kind, bytes, files })
         .collect::<Vec<_>>();
     file_types.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    let volume = volume_info_for_path(&path);
+    let purgeable_bytes = get_purgeable_space_for_path(&path).unwrap_or(None);
+    let hidden_bytes = volume.map(|v| v.used_bytes.saturating_sub(full_root.size));
 
     Ok(ScanResult {
         root: prune_for_display(&full_root, 0, display_depth),
         largest_files,
         file_types,
+        skipped_paths: stats.skipped_paths,
+        hidden_bytes,
+        purgeable_bytes,
         nodes: stats.nodes,
         files: stats.files,
         dirs: stats.dirs,
@@ -419,7 +511,25 @@ async fn scan_directory(
 
 #[tauri::command]
 fn cancel_scan(state: State<'_, AppState>) {
-    state.latest_scan_id.fetch_add(1, Ordering::Relaxed);
+    state.cancel_generation.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut scans) = state.active_scans.lock() {
+        scans.clear();
+    }
+}
+
+fn normalize_scan_key(path: &str) -> String {
+    Path::new(path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+fn clear_scan_if_current(active_scans: &Mutex<HashMap<String, u64>>, scan_key: &str, scan_id: u64) {
+    if let Ok(mut scans) = active_scans.lock() {
+        if scans.get(scan_key).copied() == Some(scan_id) {
+            scans.remove(scan_key);
+        }
+    }
 }
 
 #[tauri::command]
@@ -489,6 +599,23 @@ fn open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn preview_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("qlmanage")
+            .args(["-p", &path])
+            .spawn()
+            .map_err(|e| format!("Failed to preview path: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        open_path(path)
+    }
+}
+
+#[tauri::command]
 fn move_to_trash(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -546,6 +673,50 @@ fn move_to_trash(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn inspect_path(path: String) -> Result<PathInspection, String> {
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            Ok(PathInspection {
+                exists: true,
+                is_symlink: file_type.is_symlink(),
+                is_dir: metadata.is_dir() && !file_type.is_symlink(),
+            })
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(PathInspection {
+            exists: false,
+            is_symlink: false,
+            is_dir: false,
+        }),
+        Err(err) => Err(format!("Failed to inspect path: {err}")),
+    }
+}
+
+#[tauri::command]
+fn permanently_delete_path(path: String) -> Result<(), String> {
+    let target = Path::new(&path);
+    if path.trim().is_empty() {
+        return Err("Refusing to delete an empty path".to_string());
+    }
+    if target.parent().is_none() {
+        return Err("Refusing to permanently delete a filesystem root".to_string());
+    }
+
+    let metadata = fs::symlink_metadata(target)
+        .map_err(|e| format!("Failed to inspect path before delete: {e}"))?;
+    let file_type = metadata.file_type();
+
+    if metadata.is_dir() && !file_type.is_symlink() {
+        fs::remove_dir_all(target)
+            .map_err(|e| format!("Failed to permanently delete directory: {e}"))?;
+    } else {
+        fs::remove_file(target).map_err(|e| format!("Failed to permanently delete file: {e}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
     let mut paths = discover_volume_paths();
     paths.sort();
@@ -560,6 +731,42 @@ fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
     let mut volumes = by_mount_path.into_values().collect::<Vec<_>>();
     volumes.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(volumes)
+}
+
+#[tauri::command]
+fn get_purgeable_space(path: String) -> Result<Option<u64>, String> {
+    get_purgeable_space_for_path(&path)
+}
+
+#[tauri::command]
+fn reclaim_purgeable_space(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target_bytes = get_purgeable_space_for_path(&path)?.unwrap_or(0);
+        if target_bytes == 0 {
+            return Ok(());
+        }
+
+        let _ = path;
+        let output = Command::new("tmutil")
+            .args(["thinlocalsnapshots", "/", "999999999999", "4"])
+            .output()
+            .map_err(|e| format!("Failed to start purgeable reclaim: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "Failed to reclaim purgeable space: {}",
+                stderr.trim()
+            ));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 fn discover_volume_paths() -> Vec<String> {
@@ -633,13 +840,107 @@ fn volume_info_for_path(path: &str) -> Option<VolumeInfo> {
             .unwrap_or_else(|| mount.to_string())
     };
 
+    let purgeable_bytes = get_purgeable_space_for_path(path).ok().flatten();
+    let available_including_purgeable_bytes = avail_kb
+        .saturating_mul(1024)
+        .saturating_add(purgeable_bytes.unwrap_or(0));
+
     Some(VolumeInfo {
         name,
         path: mount.to_string(),
         total_bytes: total_kb.saturating_mul(1024),
         used_bytes: used_kb.saturating_mul(1024),
         available_bytes: avail_kb.saturating_mul(1024),
+        available_including_purgeable_bytes,
+        purgeable_bytes,
     })
+}
+
+fn get_purgeable_space_for_path(path: &str) -> Result<Option<u64>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let plist_output = Command::new("diskutil")
+            .args(["info", "-plist", path])
+            .output()
+            .map_err(|e| format!("Failed to inspect purgeable space: {e}"))?;
+        if plist_output.status.success() {
+            let text = String::from_utf8_lossy(&plist_output.stdout);
+            if let Some(bytes) = parse_purgeable_bytes_from_plist(&text) {
+                return Ok(Some(bytes));
+            }
+        }
+
+        let text_output = Command::new("diskutil")
+            .args(["info", path])
+            .output()
+            .map_err(|e| format!("Failed to inspect purgeable space: {e}"))?;
+        if !text_output.status.success() {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&text_output.stdout);
+        Ok(parse_purgeable_bytes_from_text(&text))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+fn parse_purgeable_bytes_from_plist(text: &str) -> Option<u64> {
+    let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+    for (index, line) in lines.iter().enumerate() {
+        if !line.to_ascii_lowercase().contains("purgeable") {
+            continue;
+        }
+        for next in lines.iter().skip(index + 1).take(4) {
+            if let Some(value) = next
+                .strip_prefix("<integer>")
+                .and_then(|v| v.strip_suffix("</integer>"))
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn parse_purgeable_bytes_from_text(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        if !line.to_ascii_lowercase().contains("purgeable") {
+            continue;
+        }
+
+        if let Some(open) = line.find('(') {
+            if let Some(close) = line[open + 1..].find(')') {
+                let inside = &line[open + 1..open + 1 + close];
+                let digits = inside
+                    .chars()
+                    .filter(|ch| ch.is_ascii_digit())
+                    .collect::<String>();
+                if let Ok(value) = digits.parse::<u64>() {
+                    return Some(value);
+                }
+            }
+        }
+
+        let mut digits = String::new();
+        for ch in line.chars() {
+            if ch.is_ascii_digit() {
+                digits.push(ch);
+            } else if !digits.is_empty() {
+                break;
+            }
+        }
+        if !digits.is_empty() {
+            if let Ok(value) = digits.parse::<u64>() {
+                return Some(value);
+            }
+        }
+    }
+    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -648,15 +949,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
-            latest_scan_id: Arc::new(AtomicU64::new(0)),
+            next_scan_id: Arc::new(AtomicU64::new(0)),
+            active_scans: Arc::new(Mutex::new(HashMap::new())),
+            cancel_generation: Arc::new(AtomicU64::new(0)),
         })
         .invoke_handler(tauri::generate_handler![
             scan_directory,
             cancel_scan,
             reveal_in_finder,
             open_path,
+            preview_path,
             move_to_trash,
-            list_volumes
+            inspect_path,
+            permanently_delete_path,
+            list_volumes,
+            get_purgeable_space,
+            reclaim_purgeable_space
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -676,6 +984,13 @@ mod tests {
         std::env::temp_dir().join(format!("disk_map_test_{name}_{nanos}"))
     }
 
+    fn test_scan_state(root: &Path) -> (Mutex<HashMap<String, u64>>, AtomicU64, u64, String) {
+        let scan_key = normalize_scan_key(&root.to_string_lossy());
+        let active = Mutex::new(HashMap::from([(scan_key.clone(), 1)]));
+        let generation = AtomicU64::new(0);
+        (active, generation, 0, scan_key)
+    }
+
     #[test]
     fn sorts_children_by_size_desc() {
         let root = test_root("sort");
@@ -684,7 +999,7 @@ mod tests {
         fs::write(root.join("big.txt"), vec![b'x'; 16]).expect("write big");
 
         let mut stats = ScanStats::default();
-        let latest = AtomicU64::new(1);
+        let (active, generation, generation_start, scan_key) = test_scan_state(&root);
         let mut progress = ProgressState::default();
         let node = scan_path(
             &root,
@@ -696,8 +1011,12 @@ mod tests {
             &mut progress,
             None,
             1,
+            &root.to_string_lossy(),
             Instant::now(),
-            &latest,
+            &active,
+            &scan_key,
+            &generation,
+            generation_start,
             1,
         )
         .expect("scan");
@@ -716,7 +1035,7 @@ mod tests {
         fs::write(nested.join("leaf.txt"), vec![b'x'; 20]).expect("write leaf");
 
         let mut stats = ScanStats::default();
-        let latest = AtomicU64::new(1);
+        let (active, generation, generation_start, scan_key) = test_scan_state(&root);
         let mut progress = ProgressState::default();
         let node = scan_path(
             &root,
@@ -728,8 +1047,12 @@ mod tests {
             &mut progress,
             None,
             1,
+            &root.to_string_lossy(),
             Instant::now(),
-            &latest,
+            &active,
+            &scan_key,
+            &generation,
+            generation_start,
             1,
         )
         .expect("scan");
@@ -746,7 +1069,7 @@ mod tests {
         fs::write(nested.join("leaf.bin"), vec![b'x'; 20]).expect("write leaf");
 
         let mut stats = ScanStats::default();
-        let latest = AtomicU64::new(1);
+        let (active, generation, generation_start, scan_key) = test_scan_state(&root);
         let mut progress = ProgressState::default();
         let full = scan_path(
             &root,
@@ -758,8 +1081,12 @@ mod tests {
             &mut progress,
             None,
             1,
+            &root.to_string_lossy(),
             Instant::now(),
-            &latest,
+            &active,
+            &scan_key,
+            &generation,
+            generation_start,
             1,
         )
         .expect("scan");
@@ -784,7 +1111,7 @@ mod tests {
         unix_fs::symlink(&target, &link).expect("create symlink");
 
         let mut stats = ScanStats::default();
-        let latest = AtomicU64::new(1);
+        let (active, generation, generation_start, scan_key) = test_scan_state(&root);
         let mut progress = ProgressState::default();
         let node = scan_path(
             &root,
@@ -796,8 +1123,12 @@ mod tests {
             &mut progress,
             None,
             1,
+            &root.to_string_lossy(),
             Instant::now(),
-            &latest,
+            &active,
+            &scan_key,
+            &generation,
+            generation_start,
             1,
         )
         .expect("scan");
@@ -823,7 +1154,7 @@ mod tests {
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).expect("chmod");
 
         let mut stats = ScanStats::default();
-        let latest = AtomicU64::new(1);
+        let (active, generation, generation_start, scan_key) = test_scan_state(&root);
         let mut progress = ProgressState::default();
         let result = scan_path(
             &root,
@@ -835,8 +1166,12 @@ mod tests {
             &mut progress,
             None,
             1,
+            &root.to_string_lossy(),
             Instant::now(),
-            &latest,
+            &active,
+            &scan_key,
+            &generation,
+            generation_start,
             1,
         );
         assert!(result.is_ok());
@@ -853,7 +1188,7 @@ mod tests {
         fs::write(root.join("keep.txt"), b"keep").expect("write keep");
 
         let mut stats = ScanStats::default();
-        let latest = AtomicU64::new(1);
+        let (active, generation, generation_start, scan_key) = test_scan_state(&root);
         let mut progress = ProgressState::default();
         let node = scan_path(
             &root,
@@ -865,8 +1200,12 @@ mod tests {
             &mut progress,
             None,
             1,
+            &root.to_string_lossy(),
             Instant::now(),
-            &latest,
+            &active,
+            &scan_key,
+            &generation,
+            generation_start,
             1,
         )
         .expect("scan");
@@ -877,5 +1216,75 @@ mod tests {
         assert!(stats.skipped >= 1);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_purgeable_bytes_from_plist() {
+        let text = r#"
+        <dict>
+          <key>APFSPurgeableSpace</key>
+          <integer>123456</integer>
+        </dict>
+        "#;
+
+        assert_eq!(parse_purgeable_bytes_from_plist(text), Some(123456));
+    }
+
+    #[test]
+    fn returns_none_for_plist_without_purgeable_space() {
+        let text = r#"
+        <dict>
+          <key>TotalSize</key>
+          <integer>123456</integer>
+        </dict>
+        "#;
+
+        assert_eq!(parse_purgeable_bytes_from_plist(text), None);
+    }
+
+    #[test]
+    fn parses_purgeable_bytes_from_diskutil_text() {
+        let text = "   Purgeable Space: 12.4 GB (12400000000 Bytes)";
+
+        assert_eq!(parse_purgeable_bytes_from_text(text), Some(12400000000));
+    }
+
+    #[test]
+    fn hidden_space_math_saturates() {
+        let used = 100u64;
+        let scanned = 140u64;
+
+        assert_eq!(used.saturating_sub(scanned), 0);
+    }
+
+    #[test]
+    fn permanently_deletes_file() {
+        let root = test_root("permanent_file");
+        fs::create_dir_all(&root).expect("create root");
+        let file = root.join("delete-me.txt");
+        fs::write(&file, b"delete").expect("write file");
+
+        permanently_delete_path(file.to_string_lossy().to_string()).expect("delete file");
+
+        assert!(!file.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permanently_deletes_directory() {
+        let root = test_root("permanent_dir");
+        let child = root.join("child");
+        fs::create_dir_all(&child).expect("create child");
+        fs::write(child.join("delete-me.txt"), b"delete").expect("write file");
+
+        permanently_delete_path(child.to_string_lossy().to_string()).expect("delete directory");
+
+        assert!(!child.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refuses_to_permanently_delete_root() {
+        assert!(permanently_delete_path(String::from("/")).is_err());
     }
 }
