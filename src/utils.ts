@@ -196,6 +196,18 @@ export function fileMatchesType(path: string, kind: string): boolean {
   return path.toLowerCase().endsWith(`.${kind.toLowerCase()}`);
 }
 
+export function removeNodeByPath(node: DiskNode, targetPath: string): DiskNode {
+  let nextChildren = node.children
+    .filter((child) => child.path !== targetPath)
+    .map((child) => removeNodeByPath(child, targetPath));
+  let nextSize = node.is_dir ? nextChildren.reduce((sum, child) => sum + child.size, 0) : node.size;
+  return {
+    ...node,
+    size: nextSize,
+    children: nextChildren,
+  };
+}
+
 export function filterTreeByFileType(node: DiskNode, kind: string | null): DiskNode | null {
   if (!kind) return node;
   if (!node.is_dir) {
@@ -212,4 +224,19 @@ export function filterTreeByFileType(node: DiskNode, kind: string | null): DiskN
     children,
     size: children.reduce((sum, child) => sum + child.size, 0),
   };
+}
+
+export function pruneLargestFiles<T extends { path: string }>(
+  largestFiles: T[],
+  collectorItems: { isDir: boolean; path: string }[],
+  succeeded: string[],
+): T[] {
+  let deletedDirPrefixes = collectorItems
+    .filter((item) => item.isDir && succeeded.includes(item.path))
+    .map((item) => item.path.replace(/\/+$/, "") + "/");
+  return largestFiles.filter(
+    (item) =>
+      !succeeded.includes(item.path) &&
+      !deletedDirPrefixes.some((prefix) => item.path.startsWith(prefix)),
+  );
 }

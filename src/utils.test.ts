@@ -11,6 +11,7 @@ import {
   findPathToNode,
   hasPermanentDeleteBlocker,
   otherHiddenBytes,
+  pruneLargestFiles,
   parseExcludePatterns,
   removeCollectorItem,
   usedPercent,
@@ -171,6 +172,37 @@ describe("collector helpers", () => {
     ]);
 
     expect(hasPermanentDeleteBlocker(risks)).toBe(true);
+  });
+
+  it("blocks the resolved user home directory", () => {
+    let home = "/Users/me";
+    let risks = collectorRisks([{ name: "home", path: home, size: 1, isDir: true }], home);
+    expect(risks).toContainEqual({
+      path: home,
+      severity: "blocker",
+      message: "Critical path selected.",
+    });
+    expect(hasPermanentDeleteBlocker(risks)).toBe(true);
+  });
+});
+
+describe("pruneLargestFiles", () => {
+  it("removes deleted files and files inside deleted directories", () => {
+    let largest = [
+      { path: "/a/file.txt", size: 10 },
+      { path: "/a/b/inner.txt", size: 5 },
+      { path: "/keep.txt", size: 3 },
+    ];
+    let items = [{ isDir: true, path: "/a" }];
+    let succeeded = ["/a"];
+    expect(pruneLargestFiles(largest, items, succeeded)).toEqual([{ path: "/keep.txt", size: 3 }]);
+  });
+
+  it("does not match a sibling that merely shares a prefix", () => {
+    let largest = [{ path: "/a/bc.txt", size: 5 }];
+    let items = [{ isDir: true, path: "/a/b" }];
+    let succeeded = ["/a/b"];
+    expect(pruneLargestFiles(largest, items, succeeded)).toEqual([{ path: "/a/bc.txt", size: 5 }]);
   });
 });
 
