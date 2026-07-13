@@ -1,107 +1,154 @@
 # Disk Map
 
-Disk Map is a Tauri v2 desktop storage scanner and cleanup tool inspired by DaisyDisk.
+![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)
+![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)
+![License](https://img.shields.io/badge/License-TODO-yellow.svg)
 
-It scans folders and volumes, maps file/folder sizes, previews items, stages cleanup candidates, and can move selected items to Trash or permanently delete them after confirmation.
+> A Tauri v2 desktop storage scanner and cleanup tool inspired by DaisyDisk.
 
-## Stack
+## Navigation
 
-- Tauri v2
-- React + TypeScript (Vite)
-- Rust backend command for filesystem scanning
+| Lines | Section |
+|-------|---------|
+| 1 | Title + Badges |
+| 7 | Tagline |
+| 9 | Description |
+| 13 | Prerequisites |
+| 19 | Installation |
+| 25 | Usage |
+| 31 | Features |
+| 47 | Command Reference |
+| 75 | Configuration |
+| 82 | Development |
+| 89 | Tests |
+| 99 | Contributing |
+| 105 | Changelog |
+| 109 | Links |
+| 113 | License |
+| 117 | Credits |
 
-## Features
+## Description
 
-- Tauri command:
-  - `scan_directory(path: String, max_display_depth?: number, excludes?: string[])`
-- Recursive tree response shape:
+Disk Map scans folders and mounted volumes, maps file and folder sizes recursively, previews items, and stages cleanup candidates. It surfaces hidden and purgeable space (macOS APFS) so you can see what is consuming a volume beyond the files you can browse.
 
-```ts
-{
-  name: string,
-  path: string,
-  size: number,
-  is_dir: boolean,
-  children: DiskNode[]
-}
-```
+It is a **staged-cleanup** tool: nothing is mutated until you commit the Collector. Items move to Trash or are permanently deleted only after explicit confirmation, with per-item risk checks that block irreversible actions on critical paths.
 
-- Scan response envelope:
-
-```ts
-{
-  root: DiskNode,
-  nodes: number,
-  files: number,
-  dirs: number,
-  skipped: number,
-  permissionDenied: number,
-  errors: number,
-  elapsedMs: number
-}
-```
-
-- Full recursive size computation for accurate directory totals
-- Optional max display depth from UI (`1..12`, default `4`)
-- Children sorted by `size` descending
-- Uses `symlink_metadata` to avoid blindly following symlinks
-- Skips unreadable files/folders without crashing
-- Optional exclude patterns from UI (comma-separated)
-- New scan requests cancel older in-progress scans
-- Rust scan runs in `spawn_blocking` to keep UI responsive
-- Native folder picker (Tauri dialog plugin)
-- Directory focus navigation + breadcrumb jumps (no rescan)
-- Dark UI with:
-  - path input
-  - max depth input
-  - exclude patterns input
-  - scan button
-  - loading state
-  - error state
-  - scan metrics bar
-  - largest-items summary
-  - tree filter
-  - expandable tree
-  - human-readable sizes
-
-## Project Structure
-
-- Frontend: [`src/App.tsx`](/Users/shadowwalker/Documents/GitHub/disk-map/src/App.tsx)
-- Frontend styles: [`src/App.css`](/Users/shadowwalker/Documents/GitHub/disk-map/src/App.css)
-- Rust command: [`src-tauri/src/lib.rs`](/Users/shadowwalker/Documents/GitHub/disk-map/src-tauri/src/lib.rs)
+The frontend is React + TypeScript on Vite; all filesystem work runs in a Rust backend command invoked over Tauri's IPC. Long scans execute in a blocking thread pool (`spawn_blocking`) so the UI stays responsive and emits live progress events.
 
 ## Prerequisites
 
-- Node.js 20.19+ (or newer LTS)
-- Rust toolchain (`rustup`)
-- Tauri platform dependencies for macOS
+- **Runtime**: Node.js 20.19+ (or newer LTS)
+- **Package manager**: npm
+- **Rust**: `rustup` toolchain (stable)
+- **Platform deps**: Tauri v2 macOS prerequisites (`webkit2gtk`/Xcode CLI equivalents). See [Tauri v2 setup](https://v2.tauri.app/start/prerequisites/).
 
-## Install
+## Installation
 
 ```bash
 npm install
 ```
 
-## Run (Development)
+The Rust backend is compiled by Tauri at `dev`/`build` time; no separate install step is required.
+
+## Usage
 
 ```bash
-npm run tauri dev
+npm run tauri dev      # launch the app in development
+npm run tauri build    # produce a signed/unsigned desktop bundle
 ```
 
-## Build
+In-app: paste or pick a path, set max depth and exclude patterns, then **Scan**. Use the tree, largest-items, and file-type panels to find space hogs. Select items into the **Collector**, review risks, then commit to Trash or permanent delete.
+
+## Features
+
+- **Recursive scan**: full directory size = sum of children; children sorted by size descending.
+- **Display depth pruning**: server clamps `max_display_depth` to `[1, 12]` (default `4`); deeper nodes keep their aggregated size but drop descendants from the payload.
+- **Symlink-safe**: uses `symlink_metadata` so symlinks are reported as file-like leaf nodes and never traversed.
+- **Exclude patterns**: case-insensitive substring match on name or full path; comma-separated from the UI.
+- **Live progress**: `scan-progress` events every 250 entries; newer scan for the same root cancels the older one.
+- **Hidden + purgeable space**: macOS APFS purgeable bytes via `diskutil`; `hidden_bytes = volume.used − scanned`.
+- **Staged Collector**: add/remove items, see summary + risk flags (missing, symlink, critical path, covered-by-parent). Permanent delete is blocked while any blocker risk exists.
+- **Actions**: Reveal in Finder, Open, Quick Look preview, Move to Trash, Permanently delete, plus `list_volumes` and `reclaim_purgeable_space` (macOS).
+- **Favorites**: persist starred scan roots under `disk-map:favorites` (deduped, survives restart).
+
+## Command Reference
+
+All commands are invoked from the frontend via `@tauri-apps/api/core` `invoke`. The authoritative source is [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs); the registered handler list is the contract:
 
 ```bash
-npm run tauri build
+grep -n "scan_directory\|cancel_scan\|reveal_in_finder\|open_path\|preview_path\|move_to_trash\|inspect_path\|permanently_delete_path\|list_volumes\|get_purgeable_space\|reclaim_purgeable_space" src-tauri/src/lib.rs | grep "async fn\|fn "
+```
+
+| Command | Args | Returns | Purpose |
+|---------|------|---------|---------|
+| `scan_directory` | `path`, `max_display_depth?`, `excludes?`, `client_scan_id?` | `ScanResult` | Recursive size map + analytics |
+| `cancel_scan` | — | — | Cancel all active scans (generation bump) |
+| `reveal_in_finder` | `path` | `Result<(), String>` | Reveal in OS file manager |
+| `open_path` | `path` | `Result<(), String>` | Open item in default app |
+| `preview_path` | `path` | `Result<(), String>` | Quick Look (macOS) / open |
+| `move_to_trash` | `path` | `Result<(), String>` | Move to Trash / Recycle Bin |
+| `inspect_path` | `path` | `PathInspection` | `exists`/`isSymlink`/`isDir` |
+| `permanently_delete_path` | `path` | `Result<(), String>` | Delete file or dir (guarded) |
+| `list_volumes` | — | `Vec<VolumeInfo>` | Mounted volumes + capacity |
+| `get_purgeable_space` | `path` | `Option<u64>` | APFS purgeable bytes |
+| `reclaim_purgeable_space` | `path` | `Result<(), String>` | `tmutil thinlocalsnapshots` (macOS) |
+
+`ScanResult` shape (camelCase over the wire): `root: DiskNode`, `largestFiles`, `fileTypes`, `skippedPaths`, `hiddenBytes?`, `purgeableBytes?`, `nodes`, `files`, `dirs`, `skipped`, `permissionDenied`, `errors`, `elapsedMs`. See [`src-tauri/REFERENCE.md`](src-tauri/REFERENCE.md) for every struct and constraint.
+
+## Configuration
+
+No env vars are read by the app. The bundle is configured in [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json):
+
+| Field | Value |
+|-------|-------|
+| `productName` | `Disk Map` |
+| `identifier` | `com.shadowwalker.disk-map` |
+| `version` | `0.1.0` |
+| `app.windows[0]` | `1100 × 800`, title `Disk Map` |
+| `build.devUrl` | `http://localhost:1420` |
+| `bundle.targets` | `all` |
+
+Capabilities are declared in [`src-tauri/capabilities/default.json`](src-tauri/capabilities/default.json) (`core:default`, `opener:default`, `dialog:default`).
+
+## Development
+
+```bash
+git clone https://github.com/buluma/disk-map.git
+cd disk-map
+npm install
+npm run tauri dev
 ```
 
 ## Tests
 
 ```bash
-npm test
-cargo test --manifest-path src-tauri/Cargo.toml
+npm test                                     # vitest (frontend utils/collector logic)
+cargo test --manifest-path src-tauri/Cargo.toml   # Rust scan engine + safety guards
 ```
 
-## Notes
+verify: both suites must pass before a PR is mergeable.
 
-- This starter intentionally does **not** include delete functionality.
-- It does **not** perform permanent file removal.
+## Contributing
+
+1. Fork the repo.
+2. Create a feature branch (`git checkout -b feature/my-thing`).
+3. Commit changes (`git commit -am 'Add my thing'`).
+4. Push (`git push origin feature/my-thing`).
+5. Open a Pull Request. Ensure `npm test` and `cargo test` pass.
+
+## Changelog
+
+See [Releases](https://github.com/buluma/disk-map/releases). (No `CHANGELOG.md` yet — TODO.)
+
+## Links
+
+- Repository: https://github.com/buluma/disk-map
+- Issue tracker: https://github.com/buluma/disk-map/issues
+
+## License
+
+TODO — no `LICENSE` file present. Add one and update this section.
+
+## Credits
+
+Built with [Tauri v2](https://v2.tauri.app/) (Rust + React/TypeScript), inspired by DaisyDisk.
