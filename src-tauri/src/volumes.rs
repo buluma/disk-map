@@ -172,6 +172,7 @@ pub(super) fn get_purgeable_space_for_path(path: &str) -> Result<Option<u64>, St
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn parse_purgeable_bytes_from_plist(text: &str) -> Option<u64> {
     let lines = text.lines().map(str::trim).collect::<Vec<_>>();
     for (index, line) in lines.iter().enumerate() {
@@ -191,6 +192,7 @@ pub(super) fn parse_purgeable_bytes_from_plist(text: &str) -> Option<u64> {
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn parse_purgeable_bytes_from_text(text: &str) -> Option<u64> {
     for line in text.lines() {
         if !line.to_ascii_lowercase().contains("purgeable") {
