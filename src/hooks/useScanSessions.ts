@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
@@ -12,11 +12,11 @@ import {
 } from "../utils";
 import type {
   ScanResult,
-  ScanStatus,
   ScanProgress,
-  ScanSession,
   VolumeInfo,
 } from "../types";
+
+import { initialSessionState, sessionReducer } from "../scanSessions";
 
 const STORAGE_KEYS = {
   path: "disk-map:path",
@@ -31,14 +31,29 @@ export function useScanSessions() {
   let [filterQuery, setFilterQuery] = useState("");
   let [maxDisplayDepth, setMaxDisplayDepth] = useState(4);
   let [excludeInput, setExcludeInput] = useState(".git,node_modules");
-  let [scanResult, setScanResult] = useState<ScanResult | null>(null);
   let [focusedPath, setFocusedPath] = useState<string | null>(null);
-  let [loading, setLoading] = useState(false);
   let [error, setError] = useState("");
-  let [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
-  let [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
-  let [activeClientScanId, setActiveClientScanId] = useState<number | null>(null);
-  let [scanSessions, setScanSessions] = useState<ScanSession[]>([]);
+  let [sessionState, dispatch] = useReducer(sessionReducer, initialSessionState);
+  let scanSessions = sessionState.sessions;
+  let activeClientScanId = sessionState.selectedId;
+  let nextScanId = useRef(Date.now());
+  let selectedSession = scanSessions.find((session) => session.clientScanId === activeClientScanId);
+  let scanResult = selectedSession?.result ?? null;
+  let scanStatus = selectedSession?.status ?? "idle";
+  let scanProgress = selectedSession?.status === "scanning" ? selectedSession.progress : null;
+  let loading = scanSessions.some((session) => session.status === "scanning");
+  function setScanResult(updater: (result: ScanResult | null) => ScanResult | null) {
+    dispatch({ type: "update", id: activeClientScanId, updater });
+  }
+  function selectSession(id: number) {
+    dispatch({ type: "select", id });
+    setFocusedPath(null);
+    setFileTypeFilter(null);
+  }
+  async function invalidateAfterCleanup() {
+    dispatch({ type: "cleanup" });
+    await refreshVolumes();
+  }
   let [volumes, setVolumes] = useState<VolumeInfo[]>([]);
   let [volumesOpen, setVolumesOpen] = useState(false);
   let [treeOpen, setTreeOpen] = useState(true);
@@ -155,39 +170,14 @@ export function useScanSessions() {
   }, [favorites]);
 
   useEffect(() => {
-    setLoading(scanSessions.some((session) => session.status === "scanning"));
-  }, [scanSessions]);
-
-  useEffect(() => {
+    let disposed = false;
     let unlisten: UnlistenFn | null = null;
     listen<ScanProgress>("scan-progress", (event) => {
-      let progress = event.payload;
-      setScanProgress((prev) => {
-        if (activeClientScanId === null) return prev;
-        if (progress.clientScanId !== activeClientScanId) return prev;
-        return progress;
-      });
-      setScanSessions((prev) =>
-        prev.map((session) =>
-          session.clientScanId === progress.clientScanId
-            ? { ...session, progress, status: "scanning" }
-            : session,
-        ),
-      );
-    })
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch((err) => {
-        setError(String(err));
-      });
-
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, [activeClientScanId]);
+      dispatch({ type: "progress", progress: event.payload });
+    }).then((fn) => { if (disposed) fn(); else unlisten = fn; })
+      .catch((err) => { if (!disposed) setError(String(err)); });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
 
   async function scan(targetOverride?: string) {
     let targetPath = (targetOverride ?? path).trim();
@@ -197,36 +187,11 @@ export function useScanSessions() {
       return;
     }
 
-    let clientScanId = Date.now();
-    setLoading(true);
+    let clientScanId = ++nextScanId.current;
     setError("");
     setFocusedPath(null);
-    setScanStatus("scanning");
-    setActiveClientScanId(clientScanId);
-    setScanProgress({
-      clientScanId,
-      rootPath: targetPath,
-      entriesScanned: 0,
-      dirsScanned: 0,
-      bytesAccumulated: 0,
-      elapsedMs: 0,
-    });
-    setScanSessions((prev) => [
-      {
-        clientScanId,
-        rootPath: targetPath,
-        status: "scanning",
-        progress: {
-          clientScanId,
-          rootPath: targetPath,
-          entriesScanned: 0,
-          dirsScanned: 0,
-          bytesAccumulated: 0,
-          elapsedMs: 0,
-        },
-      },
-      ...prev.filter((session) => session.rootPath !== targetPath).slice(0, 4),
-    ]);
+    setFileTypeFilter(null);
+    dispatch({ type: "start", id: clientScanId, path: targetPath });
 
     try {
       let result = await invoke<ScanResult>("scan_directory", {
@@ -235,41 +200,19 @@ export function useScanSessions() {
         excludes: parseExcludePatterns(excludeInput),
         clientScanId,
       });
-      setScanResult(result);
-      setScanStatus("success");
-      setScanSessions((prev) =>
-        prev.map((session) =>
-          session.clientScanId === clientScanId ? { ...session, status: "success" } : session,
-        ),
-      );
+      dispatch({ type: "complete", id: clientScanId, result });
     } catch (err) {
-      let message = String(err);
-      if (message.includes("Scan canceled")) {
-        setScanStatus("canceled");
-        setScanSessions((prev) =>
-          prev.map((session) =>
-            session.clientScanId === clientScanId ? { ...session, status: "canceled" } : session,
-          ),
-        );
-      } else {
-        setError(message);
-        setScanStatus("error");
-        setScanSessions((prev) =>
-          prev.map((session) =>
-            session.clientScanId === clientScanId ? { ...session, status: "error" } : session,
-          ),
-        );
-      }
+      dispatch({ type: "fail", id: clientScanId, error: String(err) });
     }
-
-    setActiveClientScanId(null);
-    setLoading(false);
   }
 
   async function cancelScan() {
     if (!loading) return;
-    await invoke("cancel_scan");
-    setScanStatus("canceled");
+    let ids = scanSessions.filter((session) => session.status === "scanning").map((session) => session.clientScanId);
+    try {
+      await invoke("cancel_scan");
+      dispatch({ type: "cancel", ids });
+    } catch (err) { setError(String(err)); }
   }
 
   async function chooseFolder() {
@@ -331,6 +274,7 @@ export function useScanSessions() {
     setError("");
     try {
       await invoke("reclaim_purgeable_space", { path: scanResult.root.path });
+      await invalidateAfterCleanup();
       for (let i = 0; i < 6; i += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 3000));
         let purgeableBytes = await invoke<number | null>("get_purgeable_space", {
@@ -375,11 +319,15 @@ export function useScanSessions() {
     focusedPath,
     setFocusedPath,
     loading,
-    error,
+    error: error || selectedSession?.error || "",
     setError,
     scanStatus,
     scanProgress,
     scanSessions,
+    activeClientScanId,
+    selectSession,
+    invalidateAfterCleanup,
+    resultStale: Boolean(selectedSession?.result && selectedSession.stale),
     volumes,
     volumesOpen,
     setVolumesOpen,

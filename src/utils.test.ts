@@ -5,6 +5,7 @@ import {
   clampDepth,
   clampPercent,
   collectorRisks,
+  collectorRoots,
   collectorSummary,
   filterTreeByFileType,
   filterTree,
@@ -14,6 +15,7 @@ import {
   pruneLargestFiles,
   parseExcludePatterns,
   removeCollectorItem,
+  removeNodeByPath,
   usedPercent,
   type DiskNode,
 } from "./utils";
@@ -215,5 +217,29 @@ describe("filterTreeByFileType", () => {
 
   it("returns null when no files match", () => {
     expect(filterTreeByFileType(makeTree(), "zip")).toBeNull();
+  });
+});
+
+describe("removeNodeByPath with depth-limited trees", () => {
+  it("preserves aggregated bytes belonging to unexpanded descendants", () => {
+    const tree: DiskNode = { name: "root", path: "/root", size: 110, is_dir: true, children: [
+      { name: "deep", path: "/root/deep", size: 100, is_dir: true, children: [] },
+      { name: "file", path: "/root/file", size: 10, is_dir: false, children: [] },
+    ] };
+    expect(removeNodeByPath(tree, "/root/file").size).toBe(100);
+    expect(removeNodeByPath(tree, "/elsewhere").size).toBe(110);
+  });
+});
+
+
+describe("overlapping cleanup selections", () => {
+  it("counts and commits a directory once when its descendants are also selected", () => {
+    const items = [
+      { name: "parent", path: "/data/parent/", size: 100, isDir: true },
+      { name: "child", path: "/data/parent/file", size: 30, isDir: false },
+      { name: "sibling", path: "/data/parent-other", size: 10, isDir: false },
+    ];
+    expect(collectorRoots(items).map((item) => item.name)).toEqual(["parent", "sibling"]);
+    expect(collectorSummary(items)).toEqual({ files: 1, folders: 1, bytes: 110 });
   });
 });

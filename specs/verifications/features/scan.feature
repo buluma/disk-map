@@ -128,3 +128,29 @@ Feature: macOS purgeable space parsing
 ## Next Step
 
 After changing any invariant above, extend the matching Rust test in `src-tauri/src/lib.rs` and re-run `cargo test --manifest-path src-tauri/Cargo.toml` before merging.
+
+  Scenario: Bounded display retention preserves deep file analytics
+    Given a directory containing files deeper than the display depth
+    When the directory is scanned with display depth 1
+    Then deep descendants are absent from the returned tree
+    And their logical bytes remain in directory totals and file-type analytics
+    And their files remain eligible for the largest-file list
+
+  Scenario: Hard links do not double-count allocated bytes
+    Given two directory entries pointing to the same Unix device and inode
+    When their directory is scanned
+    Then logical bytes count both entries
+    And allocated bytes count the inode once
+    And one hard-link duplicate is reported
+
+  Scenario: Folder scans do not claim volume-wide hidden usage
+    Given a scan root below the volume mount point
+    When the folder is scanned
+    Then hidden bytes are unavailable
+
+  Scenario: Scan completion preserves the selected session
+    Given two scan sessions running concurrently
+    And the second session is selected
+    When the first session completes after the second
+    Then the second session remains selected
+    And both results remain attached to their own sessions

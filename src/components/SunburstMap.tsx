@@ -46,34 +46,33 @@ function buildSunburstSegments(
 ): SunburstSegment[] {
   let segments: SunburstSegment[] = [];
 
-  function walk(node: DiskNode, depth: number, startAngle: number, endAngle: number, parentSize: number) {
+  function walk(node: DiskNode, depth: number, startAngle: number, endAngle: number) {
     if (depth > maxDepth || !node.children.length || node.size <= 0) {
       return;
     }
 
     let currentAngle = startAngle;
     for (let child of node.children) {
-      if (child.size < minSize) continue;
       let angleSpan = (endAngle - startAngle) * (child.size / node.size);
       let childStart = currentAngle;
       let childEnd = currentAngle + angleSpan;
       currentAngle = childEnd;
 
-      if (childEnd - childStart < 0.002) continue;
+      if (child.size < minSize || childEnd - childStart < 0.002) continue;
 
       segments.push({
         node: child,
         depth,
         startAngle: childStart,
         endAngle: childEnd,
-        parentSize,
+        parentSize: node.size,
       });
 
-      walk(child, depth + 1, childStart, childEnd, child.size);
+      walk(child, depth + 1, childStart, childEnd);
     }
   }
 
-  walk(root, 1, -Math.PI / 2, Math.PI * 1.5, root.size);
+  walk(root, 1, -Math.PI / 2, Math.PI * 1.5);
   return segments;
 }
 
@@ -95,8 +94,8 @@ export function SunburstMap({
   let size = 560;
   let cx = size / 2;
   let cy = size / 2;
-  let ring = 38;
   let core = 56;
+  let ring = (size / 2 - core - 12) / 7;
   let segments = useMemo(
     () => buildSunburstSegments(root, 7, Math.max(root.size * 0.001, 1)),
     [root],
@@ -109,7 +108,7 @@ export function SunburstMap({
         <span>Click a directory segment to focus</span>
       </div>
       <div className="sunburst-wrap">
-        <svg viewBox={`0 0 ${size} ${size}`} className="sunburst" role="img" aria-label="Disk usage sunburst">
+        <svg viewBox={`0 0 ${size} ${size}`} className="sunburst" role="group" aria-label="Disk usage sunburst">
           <circle cx={cx} cy={cy} r={core - 10} fill="#0f1626" stroke="#243253" strokeWidth="1" />
           <text x={cx} y={cy - 6} textAnchor="middle" className="sunburst-label-main">
             {root.name || "/"}
@@ -135,6 +134,17 @@ export function SunburstMap({
                 d={path}
                 fill={segmentColor(segment.depth, index)}
                 className={`sunburst-segment ${clickable ? "clickable" : ""}`}
+                tabIndex={0}
+                role={clickable ? "button" : "img"}
+                aria-label={`${segment.node.path}: ${formatBytes(segment.node.size)}${clickable ? ", focus directory" : ""}`}
+                onFocus={() => setHovered(segment)}
+                onBlur={() => setHovered(null)}
+                onKeyDown={(event) => {
+                  if (clickable && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    onFocusDirectory(segment.node.path);
+                  }
+                }}
                 onMouseEnter={() => setHovered(segment)}
                 onMouseLeave={() => setHovered(null)}
                 onClick={() => {
@@ -147,7 +157,7 @@ export function SunburstMap({
         <div className="sunburst-tooltip">
           {hovered ? (
             <>
-              <div className="tooltip-title">{hovered.node.name}</div>
+              <div className="tooltip-title">{hovered.node.path}</div>
               <div>{formatBytes(hovered.node.size)}</div>
               <div>{((hovered.node.size / root.size) * 100).toFixed(2)}% of total</div>
               <div>{((hovered.node.size / hovered.parentSize) * 100).toFixed(2)}% of parent</div>

@@ -1,6 +1,6 @@
 import { useScanSessions } from "./hooks/useScanSessions";
 import { useCollector } from "./hooks/useCollector";
-import { formatBytes, removeCollectorItem, usedPercent } from "./utils";
+import { clampDepth, formatBytes, removeCollectorItem, usedPercent } from "./utils";
 import { NodeView } from "./components/NodeView";
 import { TopLargest } from "./components/TopLargest";
 import { GlobalLargestFiles } from "./components/GlobalLargestFiles";
@@ -17,8 +17,7 @@ export default function App() {
   let scan = useScanSessions();
   let collector = useCollector({
     homePath: scan.homePath,
-    setScanResult: scan.setScanResult,
-    setFocusedPath: scan.setFocusedPath,
+    onCleanup: scan.invalidateAfterCleanup,
     setError: scan.setError,
   });
   let pending = collector.pendingCollectorAction;
@@ -57,8 +56,8 @@ export default function App() {
           value={scan.maxDisplayDepth}
           onChange={(e) => {
             let next = Number(e.target.value);
-            if (Number.isNaN(next)) return;
-            scan.setMaxDisplayDepth(next);
+            if (!Number.isFinite(next)) return;
+            scan.setMaxDisplayDepth(clampDepth(next));
           }}
           aria-label="Max display depth"
           title="Max display depth"
@@ -73,7 +72,7 @@ export default function App() {
           Refresh Volumes
         </button>
         <button onClick={scan.cancelScan} disabled={!scan.loading}>
-          Cancel
+          Cancel All
         </button>
         <button onClick={() => scan.scan()}>
           Scan
@@ -132,7 +131,9 @@ export default function App() {
 
       {scan.scanResult && (
         <section className="scan-metrics">
-          <span>Total size: {formatBytes(scan.scanResult.root.size)}</span>
+          <span>Logical size: {formatBytes(scan.scanResult.root.size)}</span>
+          <span>Allocated: {scan.scanResult.allocatedBytes == null ? "Unavailable" : formatBytes(scan.scanResult.allocatedBytes)}</span>
+          <span>Hard-link duplicates: {scan.scanResult.hardLinkDuplicates ?? 0}</span>
           <span>Nodes: {scan.scanResult.nodes}</span>
           <span>Files: {scan.scanResult.files}</span>
           <span>Dirs: {scan.scanResult.dirs}</span>
@@ -155,8 +156,10 @@ export default function App() {
           </div>
         </section>
       )}
-      <ScanSessionsPanel sessions={scan.scanSessions} />
+      <ScanSessionsPanel sessions={scan.scanSessions} selectedId={scan.activeClientScanId} onSelect={scan.selectSession} />
+      {scan.resultStale && <p role="status">These results predate cleanup. Rescan this folder to refresh sizes and analytics. <button onClick={() => scan.scan(scan.scanResult?.root.path)}>Rescan</button></p>}
       <CollectorPanel
+        busy={collector.committing}
         items={collector.collectorItems}
         onRemove={(targetPath) => collector.setCollectorItems((prev) => removeCollectorItem(prev, targetPath))}
         onClear={() => collector.setCollectorItems([])}
@@ -166,6 +169,7 @@ export default function App() {
       />
       {pending && (
         <CollectorDryRunModal
+          busy={collector.committing}
           action={pending}
           items={collector.collectorItems}
           homePath={scan.homePath}
@@ -274,7 +278,10 @@ export default function App() {
                   </span>
                   <span className="size">
                     Free:{" "}
-                    {formatBytes(volume.availableIncludingPurgeableBytes)}
+                    {formatBytes(volume.availableBytes)}
+                  </span>
+                  <span className="size">
+                    Including purgeable: {formatBytes(volume.availableIncludingPurgeableBytes)}
                   </span>
                   <span className="size">
                     Purgeable:{" "}
