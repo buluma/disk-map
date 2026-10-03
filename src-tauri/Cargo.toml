@@ -2,6 +2,7 @@
 name = "disk-map"
 version = "0.2.0"
 description = "A desktop storage scanner and cleanup tool"
+license = "GPL-3.0-only"
 authors = ["you"]
 edition = "2021"
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Adopt GPL-3.0-only licensing and include the license text in app bundles.
+
 ## 0.2.0 — 2026-10-03
 
 - Independent scan sessions keep results, progress, and errors attached to their own scans. Selecting a session controls which result is displayed.
