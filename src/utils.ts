@@ -118,8 +118,13 @@ export function removeCollectorItem(items: CollectorItem[], path: string): Colle
   return items.filter((item) => item.path !== path);
 }
 
+export function collectorRoots(items: CollectorItem[]): CollectorItem[] {
+  return items.filter((item) => !items.some((parent) =>
+    parent.isDir && !parent.isSymlink && isPathDescendant(item.path, parent.path)));
+}
+
 export function collectorSummary(items: CollectorItem[]): CollectorSummary {
-  return items.reduce(
+  return collectorRoots(items).reduce(
     (summary, item) => ({
       files: summary.files + (item.isDir ? 0 : 1),
       folders: summary.folders + (item.isDir ? 1 : 0),
@@ -160,7 +165,7 @@ export function collectorRisks(items: CollectorItem[], homePath?: string): Colle
         message: "This item is a symlink; only the link should be removed.",
       });
     }
-    if (itemPath === "/" || itemPath === "/Users" || itemPath === normalizedHome) {
+    if (["/", "/Users", "/System", "/Library", "/Applications", "/bin", "/sbin", "/usr", "/etc", "/var", "/private", "/dev", "/proc", "/sys", "/boot", "/home", "/root", "/Volumes"].includes(itemPath) || itemPath === normalizedHome || (normalizedHome !== null && isPathDescendant(normalizedHome, itemPath))) {
       risks.push({
         path: item.path,
         severity: "blocker",
@@ -200,7 +205,11 @@ export function removeNodeByPath(node: DiskNode, targetPath: string): DiskNode {
   let nextChildren = node.children
     .filter((child) => child.path !== targetPath)
     .map((child) => removeNodeByPath(child, targetPath));
-  let nextSize = node.is_dir ? nextChildren.reduce((sum, child) => sum + child.size, 0) : node.size;
+  let removedBytes = node.children.reduce((sum, child) => {
+    let kept = nextChildren.find((candidate) => candidate.path === child.path);
+    return sum + child.size - (kept?.size ?? 0);
+  }, 0);
+  let nextSize = Math.max(0, node.size - removedBytes);
   return {
     ...node,
     size: nextSize,

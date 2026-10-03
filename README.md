@@ -38,14 +38,14 @@ The frontend is React + TypeScript on Vite; all filesystem work runs in a Rust b
 ## Prerequisites
 
 - **Runtime**: Node.js 20.19+ (or newer LTS)
-- **Package manager**: npm
+- **Package manager**: Bun (version declared in `package.json`)
 - **Rust**: `rustup` toolchain (stable)
 - **Platform deps**: Tauri v2 macOS prerequisites (`webkit2gtk`/Xcode CLI equivalents). See [Tauri v2 setup](https://v2.tauri.app/start/prerequisites/).
 
 ## Installation
 
 ```bash
-npm install
+bun install --frozen-lockfile
 ```
 
 The Rust backend is compiled by Tauri at `dev`/`build` time; no separate install step is required.
@@ -53,30 +53,42 @@ The Rust backend is compiled by Tauri at `dev`/`build` time; no separate install
 ## Usage
 
 ```bash
-npm run tauri dev      # launch the app in development
-npm run tauri build    # produce a signed/unsigned desktop bundle
+bun run tauri dev      # launch the app in development
+bun run tauri build    # produce a signed/unsigned desktop bundle
 ```
 
 In-app: paste or pick a path, set max depth and exclude patterns, then **Scan**. Use the tree, largest-items, and file-type panels to find space hogs. Select items into the **Collector**, review risks, then commit to Trash or permanent delete.
 
+## Download a macOS CI build
+
+On a pull request, a push to `master`, or a manual CI run, the **macOS universal DMG** job builds an installer for Intel and Apple Silicon after validation passes. Download the `disk-map-macos-universal-unsigned-<commit>` artifact from the workflow run's **Artifacts** section, unzip it, open the DMG, and drag **Disk Map** into **Applications**. Artifacts are retained for 30 days.
+
+These builds have an ad-hoc signature for Apple Silicon compatibility, without an Apple Developer certificate or notarization. macOS may require **System Settings → Privacy & Security → Open Anyway** on first launch. See [Tauri's ad-hoc signing documentation](https://v2.tauri.app/distribute/sign/macos/#ad-hoc-signing).
+
+The job verifies that the DMG mounts, contains the app and Applications shortcut, has a valid code signature, and includes both CPU architectures before uploading it. No signing credentials are required.
+
 ## Features
 
+- **Size accounting**: tree sizes are logical bytes; Unix allocated bytes deduplicate hard links. Shared APFS blocks and compression may still affect estimates.
+- **Bounded tree retention**: deeper directories are scanned for totals and analytics without retaining their descendants.
+- **Independent sessions**: select any scan session to view its own result; completion never changes the selection. Cleanup marks existing and overlapping scans stale and refreshes volume capacity.
+- **Native cleanup guards**: both Trash and permanent deletion reject roots, critical directories, home and its ancestors, relative paths, and parent traversal; final symlinks are removed as links.
 - **Recursive scan**: full directory size = sum of children; children sorted by size descending.
-- **Display depth pruning**: server clamps `max_display_depth` to `[1, 12]` (default `4`); deeper nodes keep their aggregated size but drop descendants from the payload.
+- **Display depth pruning**: backend clamps `max_display_depth` to `[1, 12]` (default `4`); deeper nodes keep their aggregated size but drop descendants from the payload.
 - **Symlink-safe**: uses `symlink_metadata` so symlinks are reported as file-like leaf nodes and never traversed.
 - **Exclude patterns**: case-insensitive substring match on name or full path; comma-separated from the UI.
 - **Live progress**: `scan-progress` events every 250 entries; newer scan for the same root cancels the older one.
-- **Hidden + purgeable space**: macOS APFS purgeable bytes via `diskutil`; `hidden_bytes = volume.used − scanned`.
+- **Hidden + purgeable space**: macOS APFS purgeable bytes via `diskutil`; `whole-volume unattributed usage estimate = volume.used − unique allocated file bytes`.
 - **Staged Collector**: add/remove items, see summary + risk flags (missing, symlink, critical path, covered-by-parent). Permanent delete is blocked while any blocker risk exists.
 - **Actions**: Reveal in Finder, Open, Quick Look preview, Move to Trash, Permanently delete, plus `list_volumes` and `reclaim_purgeable_space` (macOS).
 - **Favorites**: persist starred scan roots under `disk-map:favorites` (deduped, survives restart).
 
 ## Command Reference
 
-All commands are invoked from the frontend via `@tauri-apps/api/core` `invoke`. The authoritative source is [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs); the registered handler list is the contract:
+All commands are invoked from the frontend via `@tauri-apps/api/core` `invoke`. Commands live in `lib.rs`, `actions.rs`, and `volumes.rs`. The registration entry point is [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs); the registered handler list is the contract:
 
 ```bash
-grep -n "scan_directory\|cancel_scan\|reveal_in_finder\|open_path\|preview_path\|move_to_trash\|inspect_path\|permanently_delete_path\|list_volumes\|get_purgeable_space\|reclaim_purgeable_space" src-tauri/src/lib.rs | grep "async fn\|fn "
+rg "(async )?fn (scan_directory|cancel_scan|reveal_in_finder|open_path|preview_path|move_to_trash|inspect_path|permanently_delete_path|list_volumes|get_purgeable_space|reclaim_purgeable_space)" src-tauri/src
 ```
 
 | Command | Args | Returns | Purpose |
@@ -93,7 +105,7 @@ grep -n "scan_directory\|cancel_scan\|reveal_in_finder\|open_path\|preview_path\
 | `get_purgeable_space` | `path` | `Option<u64>` | APFS purgeable bytes |
 | `reclaim_purgeable_space` | `path` | `Result<(), String>` | `tmutil thinlocalsnapshots` (macOS) |
 
-`ScanResult` shape (camelCase over the wire): `root: DiskNode`, `largestFiles`, `fileTypes`, `skippedPaths`, `hiddenBytes?`, `purgeableBytes?`, `nodes`, `files`, `dirs`, `skipped`, `permissionDenied`, `errors`, `elapsedMs`. See [`src-tauri/REFERENCE.md`](src-tauri/REFERENCE.md) for every struct and constraint.
+`ScanResult` shape (camelCase over the wire): `root: DiskNode`, `allocatedBytes?`, `hardLinkDuplicates`, `largestFiles`, `fileTypes`, `skippedPaths`, `hiddenBytes?`, `purgeableBytes?`, `nodes`, `files`, `dirs`, `skipped`, `permissionDenied`, `errors`, `elapsedMs`. See [`src-tauri/REFERENCE.md`](src-tauri/REFERENCE.md) for every struct and constraint.
 
 ## Configuration
 
@@ -115,14 +127,14 @@ Capabilities are declared in [`src-tauri/capabilities/default.json`](src-tauri/c
 ```bash
 git clone https://github.com/buluma/disk-map.git
 cd disk-map
-npm install
-npm run tauri dev
+bun install --frozen-lockfile
+bun run tauri dev
 ```
 
 ## Tests
 
 ```bash
-npm test                                     # vitest (frontend utils/collector logic)
+bun run test                                     # vitest (frontend utils/collector logic)
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust scan engine + safety guards
 ```
 
@@ -134,7 +146,7 @@ verify: both suites must pass before a PR is mergeable.
 2. Create a feature branch (`git checkout -b feature/my-thing`).
 3. Commit changes (`git commit -am 'Add my thing'`).
 4. Push (`git push origin feature/my-thing`).
-5. Open a Pull Request. Ensure `npm test` and `cargo test` pass.
+5. Open a Pull Request. Ensure `bun run test` and `cargo test` pass.
 
 ## Changelog
 

@@ -3,6 +3,7 @@ import type { CollectorAction } from "../types";
 
 export function CollectorDryRunModal({
   action,
+  busy,
   items,
   homePath,
   deleteConfirmation,
@@ -11,6 +12,7 @@ export function CollectorDryRunModal({
   onConfirm,
 }: {
   action: CollectorAction;
+  busy: boolean;
   items: CollectorItem[];
   homePath: string;
   deleteConfirmation: string;
@@ -29,7 +31,7 @@ export function CollectorDryRunModal({
       <section className="modal" role="dialog" aria-modal="true" aria-label="Collector dry run summary">
         <div className="summary-head">
           <h2>{permanent ? "Delete Permanently" : "Move to Trash"}</h2>
-          <button className="collapse-btn" onClick={onCancel}>
+          <button className="collapse-btn" disabled={busy} onClick={onCancel}>
             Cancel
           </button>
         </div>
@@ -65,7 +67,7 @@ export function CollectorDryRunModal({
               spellCheck={false}
             />
           )}
-          <button className={permanent ? "danger-action" : "primary-action"} onClick={onConfirm} disabled={disabled}>
+          <button className={permanent ? "danger-action" : "primary-action"} onClick={onConfirm} disabled={busy || disabled}>
             {permanent ? "Delete Permanently" : "Move to Trash"}
           </button>
         </div>

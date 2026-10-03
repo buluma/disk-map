@@ -2,9 +2,13 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches:
       - master
+
+permissions:
+  contents: read
 
 jobs:
   validate:
@@ -51,5 +55,69 @@ jobs:
       - name: Build frontend
         run: bun run build
 
-      - name: Check Rust backend
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Test Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  macos-dmg:
+    name: macOS universal DMG
+    needs: validate
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Setup Rust with both macOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build unsigned universal DMG
+        run: bun run tauri build --target universal-apple-darwin --bundles dmg --config src-tauri/tauri.ci.conf.json
+
+      - name: Verify installable DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg_dir="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+          shopt -s nullglob
+          dmgs=("$dmg_dir"/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          hdiutil verify "${dmgs[0]}"
+          mountpoint="$RUNNER_TEMP/disk-map-dmg"
+          mkdir -p "$mountpoint"
+          hdiutil attach "${dmgs[0]}" -readonly -nobrowse -mountpoint "$mountpoint"
+          trap 'hdiutil detach "$mountpoint"' EXIT
+          app="$mountpoint/Disk Map.app"
+          test -d "$app"
+          test -L "$mountpoint/Applications"
+          codesign --verify --deep --strict "$app"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
+          lipo "$app/Contents/MacOS/$executable" -verify_arch arm64 x86_64
+
+      - name: Upload unsigned DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: disk-map-macos-universal-unsigned-${{ github.sha }}
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

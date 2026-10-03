@@ -1,6 +1,7 @@
-import { collectorRisks, hasPermanentDeleteBlocker, formatBytes, type CollectorItem } from "../utils";
+import { collectorRisks, collectorSummary, hasPermanentDeleteBlocker, formatBytes, type CollectorItem } from "../utils";
 
 export function CollectorPanel({
+  busy,
   items,
   onRemove,
   onClear,
@@ -8,6 +9,7 @@ export function CollectorPanel({
   onPermanentDelete,
   homePath,
 }: {
+  busy: boolean;
   items: CollectorItem[];
   onRemove: (path: string) => void;
   onClear: () => void;
@@ -15,7 +17,7 @@ export function CollectorPanel({
   onPermanentDelete: () => void;
   homePath?: string;
 }) {
-  let total = items.reduce((sum, item) => sum + item.size, 0);
+  let total = collectorSummary(items).bytes;
   let risks = collectorRisks(items, homePath);
   let permanentDeleteBlocked = hasPermanentDeleteBlocker(risks);
 
@@ -26,13 +28,13 @@ export function CollectorPanel({
       <div className="summary-head">
         <h2>Collector ({items.length})</h2>
         <div className="button-row">
-          <button className="collapse-btn" onClick={onClear}>
+          <button className="collapse-btn" disabled={busy} onClick={onClear}>
             Clear
           </button>
-          <button className="collapse-btn" onClick={onMoveToTrash}>
+          <button className="collapse-btn" disabled={busy} onClick={onMoveToTrash}>
             Move to Trash
           </button>
-          <button className="collapse-btn danger" onClick={onPermanentDelete} disabled={permanentDeleteBlocked}>
+          <button className="collapse-btn danger" onClick={onPermanentDelete} disabled={busy || permanentDeleteBlocked}>
             Delete Permanently
           </button>
         </div>
@@ -57,7 +59,7 @@ export function CollectorPanel({
               {item.name}
             </span>
             <span className="size">{formatBytes(item.size)}</span>
-            <button className="action-btn" onClick={() => onRemove(item.path)}>
+            <button className="action-btn" disabled={busy} onClick={() => onRemove(item.path)}>
               Remove
             </button>
           </div>

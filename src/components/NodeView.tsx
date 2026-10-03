@@ -52,7 +52,14 @@ export function NodeView({
         <button
           className="toggle"
           onClick={() => setOpen(!open)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+              event.preventDefault();
+              setOpen(event.key === "ArrowRight");
+            }
+          }}
           disabled={!hasChildren}
+          aria-expanded={hasChildren ? open : undefined}
           aria-label={open ? "Collapse node" : "Expand node"}
         >
           {hasChildren ? (open ? "−" : "+") : "•"}

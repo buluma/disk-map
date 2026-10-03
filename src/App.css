@@ -584,3 +584,7 @@ button:disabled {
     flex-wrap: wrap;
   }
 }
+
+.sunburst-segment:focus-visible { stroke: #fff; stroke-width: 3; outline: none; }
+.session-row button[aria-pressed="true"] { font-weight: 700; text-decoration: underline; }
+.sunburst-tooltip { overflow-wrap: anywhere; }
