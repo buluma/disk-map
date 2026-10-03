@@ -82,6 +82,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: true
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -110,7 +111,7 @@ jobs:
           test -L "$mountpoint/Applications"
           codesign --verify --deep --strict "$app"
           executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
-          lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/$executable"
+          lipo "$app/Contents/MacOS/$executable" -verify_arch arm64 x86_64
 
       - name: Upload unsigned DMG
         uses: actions/upload-artifact@v7
