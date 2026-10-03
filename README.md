@@ -59,6 +59,14 @@ bun run tauri build    # produce a signed/unsigned desktop bundle
 
 In-app: paste or pick a path, set max depth and exclude patterns, then **Scan**. Use the tree, largest-items, and file-type panels to find space hogs. Select items into the **Collector**, review risks, then commit to Trash or permanent delete.
 
+## Download a macOS CI build
+
+On a pull request, a push to `master`, or a manual CI run, the **macOS universal DMG** job builds an installer for Intel and Apple Silicon after validation passes. Download the `disk-map-macos-universal-unsigned-<commit>` artifact from the workflow run's **Artifacts** section, unzip it, open the DMG, and drag **Disk Map** into **Applications**. Artifacts are retained for 30 days.
+
+These builds have an ad-hoc signature for Apple Silicon compatibility, without an Apple Developer certificate or notarization. macOS may require **System Settings → Privacy & Security → Open Anyway** on first launch. See [Tauri's ad-hoc signing documentation](https://v2.tauri.app/distribute/sign/macos/#ad-hoc-signing).
+
+The job verifies that the DMG mounts, contains the app and Applications shortcut, has a valid code signature, and includes both CPU architectures before uploading it. No signing credentials are required.
+
 ## Features
 
 - **Size accounting**: tree sizes are logical bytes; Unix allocated bytes deduplicate hard links. Shared APFS blocks and compression may still affect estimates.
