@@ -109,6 +109,7 @@ jobs:
           app="$mountpoint/Disk Map.app"
           test -d "$app"
           test -L "$mountpoint/Applications"
+          cmp LICENSE "$app/Contents/Resources/LICENSE"
           codesign --verify --deep --strict "$app"
           executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
           lipo "$app/Contents/MacOS/$executable" -verify_arch arm64 x86_64

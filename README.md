@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)
-![License](https://img.shields.io/badge/License-TODO-yellow.svg)
+[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 > A Tauri v2 desktop storage scanner and cleanup tool inspired by DaisyDisk.
 
@@ -163,7 +163,9 @@ See [CHANGELOG.md](CHANGELOG.md) and [Releases](https://github.com/buluma/disk-m
 
 ## License
 
-TODO — no `LICENSE` file present. Add one and update this section.
+Disk Map is licensed under the [GNU General Public License, version 3 only](LICENSE) (`GPL-3.0-only`). Distributed modified versions must provide corresponding source under GPLv3. Third-party dependencies retain their own licenses.
+
+The license text is included in app bundles as `LICENSE` in the resources directory.
 
 ## Credits
 
