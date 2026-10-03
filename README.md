@@ -1,6 +1,6 @@
 # Disk Map
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)
 ![License](https://img.shields.io/badge/License-TODO-yellow.svg)
 
@@ -59,6 +59,10 @@ bun run tauri build    # produce a signed/unsigned desktop bundle
 
 In-app: paste or pick a path, set max depth and exclude patterns, then **Scan**. Use the tree, largest-items, and file-type panels to find space hogs. Select items into the **Collector**, review risks, then commit to Trash or permanent delete.
 
+## Download for macOS
+
+Published installers are available on the [Releases page](https://github.com/buluma/disk-map/releases). Download the universal `.dmg` for Intel and Apple Silicon, open it, and drag **Disk Map** into **Applications**.
+
 ## Download a macOS CI build
 
 On a pull request, a push to `master`, or a manual CI run, the **macOS universal DMG** job builds an installer for Intel and Apple Silicon after validation passes. Download the `disk-map-macos-universal-unsigned-<commit>` artifact from the workflow run's **Artifacts** section, unzip it, open the DMG, and drag **Disk Map** into **Applications**. Artifacts are retained for 30 days.
@@ -115,7 +119,7 @@ No env vars are read by the app. The bundle is configured in [`src-tauri/tauri.c
 |-------|-------|
 | `productName` | `Disk Map` |
 | `identifier` | `com.shadowwalker.disk-map` |
-| `version` | `0.1.0` |
+| `version` | `0.2.0` |
 | `app.windows[0]` | `1100 × 800`, title `Disk Map` |
 | `build.devUrl` | `http://localhost:1420` |
 | `bundle.targets` | `all` |
@@ -150,7 +154,7 @@ verify: both suites must pass before a PR is mergeable.
 
 ## Changelog
 
-See [Releases](https://github.com/buluma/disk-map/releases). (No `CHANGELOG.md` yet — TODO.)
+See [CHANGELOG.md](CHANGELOG.md) and [Releases](https://github.com/buluma/disk-map/releases).
 
 ## Links
 
