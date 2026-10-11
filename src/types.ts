@@ -2,6 +2,8 @@ import type { DiskNode } from "./utils";
 
 export type ScanResult = {
   root: DiskNode;
+  allocatedBytes?: number | null;
+  hardLinkDuplicates?: number;
   largestFiles: LargestFile[];
   fileTypes: FileTypeStat[];
   skippedPaths: SkippedPath[];
@@ -60,6 +62,10 @@ export type ScanSession = {
   rootPath: string;
   status: ScanStatus;
   progress: ScanProgress;
+  result?: ScanResult;
+  error?: string;
+  stale?: boolean;
+  generation?: number;
 };
 
 export type PathInspection = {

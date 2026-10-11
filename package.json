@@ -1,7 +1,7 @@
 {
   "name": "disk-map",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "packageManager": "bun@1.4.0",
   "scripts": {
@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "@tauri-apps/plugin-dialog": "^2"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
@@ -26,5 +28,6 @@
     "typescript": "~5.8.3",
     "vite": "^8.0.5",
     "vitest": "^4.1.10"
-  }
+  },
+  "license": "GPL-3.0-only"
 }

@@ -1,8 +1,8 @@
 # Scan Engine & Tauri Command Reference
 
-Authoritative contract for `src-tauri/src/lib.rs`. Frontend types mirror these in [`src/utils.ts`](src/utils.ts) and [`src/App.tsx`](src/App.tsx). If the Rust and this doc disagree, the Rust is the source of truth and this doc is wrong — fix this doc.
+Command registration is in `src-tauri/src/lib.rs`; scanner, filesystem actions, and volume queries live in `scanner.rs`, `actions.rs`, and `volumes.rs`. Frontend types mirror these in `src/types.ts` and `src/utils.ts`. If the Rust and this doc disagree, the Rust is the source of truth and this doc is wrong — fix this doc.
 
-verify: `grep -c "#\[tauri::command\]" src-tauri/src/lib.rs` → expect `11`.
+verify: `rg "#\[tauri::command\]" src-tauri/src` → expect `11` matches.
 
 ---
 
@@ -10,7 +10,7 @@ verify: `grep -c "#\[tauri::command\]" src-tauri/src/lib.rs` → expect `11`.
 
 Every command is registered in `run()` via `tauri::generate_handler!`. There is **no** HTTP/CLI surface — only Tauri IPC.
 
-verify: `grep -n "generate_handler!" src-tauri/src/lib.rs`
+verify: `grep -n "generate_handler!" src-tauri/src/*.rs`
 
 State is shared via `manage(AppState { next_scan_id, active_scans, cancel_generation })`, all `Arc<…>` wrapped. `scan_directory` takes `State<'_, AppState>`.
 
@@ -21,7 +21,7 @@ State is shared via `manage(AppState { next_scan_id, active_scans, cancel_genera
 | Struct | Fields | Notes |
 |--------|--------|-------|
 | `DiskNode` | `name, path, size: u64, is_dir: bool, children: Vec<DiskNode>` | Tree node. Leaf when `children` empty. |
-| `ScanResult` | `root, largestFiles, fileTypes, skippedPaths, hiddenBytes?, purgeableBytes?, nodes, files, dirs, skipped, permissionDenied, errors, elapsedMs` | Top-level scan envelope. |
+| `ScanResult` | `root, allocatedBytes?, hardLinkDuplicates, largestFiles, fileTypes, skippedPaths, hiddenBytes?, purgeableBytes?, nodes, files, dirs, skipped, permissionDenied, errors, elapsedMs` | Top-level scan envelope. |
 | `LargestFile` | `name, path, size, parentPath` | Up to 100 entries, sorted desc. |
 | `FileTypeStat` | `kind, bytes, files` | `kind` = lowercase extension or `"(no extension)"`. |
 | `SkippedPath` | `path, reason` | `reason` ∈ {`Excluded`, `Permission denied`, `Filesystem error`}. Max 100 recorded. |
@@ -29,7 +29,7 @@ State is shared via `manage(AppState { next_scan_id, active_scans, cancel_genera
 | `PathInspection` | `exists, isSymlink, isDir` | `isDir` is false for symlinks. |
 | `ScanProgress` | `clientScanId, rootPath, entriesScanned, dirsScanned, bytesAccumulated, elapsedMs` | Emitted as event `scan-progress`. |
 
-verify: `grep -n "struct ScanResult\|struct DiskNode\|struct VolumeInfo\|struct PathInspection" src-tauri/src/lib.rs`
+verify: `grep -n "struct ScanResult\|struct DiskNode\|struct VolumeInfo\|struct PathInspection" src-tauri/src/*.rs`
 
 ---
 
@@ -50,20 +50,20 @@ async fn scan_directory(
 
 ### Constraints (all must hold; these are the design's invariants)
 
-1. **Depth clamp**: `display_depth = max_display_depth.unwrap_or(4).min(12)`. Effective range `[1, 12]` with default `4`. The frontend additionally clamps with `clampDepth` to `[1, 12]` in [`src/utils.ts`](src/utils.ts).
-   verify: `grep -n "unwrap_or(4).min(12)" src-tauri/src/lib.rs`
+1. **Depth clamp**: `display_depth = max_display_depth.unwrap_or(4).clamp(1, 12)`. Effective range `[1, 12]` with default `4`. The frontend additionally clamps with `clampDepth` to `[1, 12]` in [`src/utils.ts`](src/utils.ts).
+   verify: `grep -n "unwrap_or(4).clamp(1, 12)" src-tauri/src/*.rs`
 2. **Exclude normalization**: patterns are `trim()` + `to_lowercase()` + dropped if empty. Match is case-insensitive substring on **filename OR full path**.
    verify: `grep -n "to_lowercase()" src-tauri/src/lib.rs | head`
 3. **Symlink safety**: `fs::symlink_metadata` is used (never `metadata`), so traversal never follows symlinks. A symlink node is emitted as `is_dir: false` leaf with no children.
-   verify: `grep -n "symlink_metadata" src-tauri/src/lib.rs`
+   verify: `grep -n "symlink_metadata" src-tauri/src/*.rs`
 4. **Children ordering**: each directory's `children` are `sort_by(|a, b| b.size.cmp(&a.size))` — descending by size.
-   verify: `grep -n "children.sort_by" src-tauri/src/lib.rs`
-5. **Largest files**: cap `largest_limit = 100`; maintained as a min-heap-by-size; final result re-sorted desc.
+   verify: `grep -n "children.sort_by" src-tauri/src/*.rs`
+5. **Largest files**: cap `largest_limit = 100`; maintained as a bounded vector; final result re-sorted desc.
 6. **Progress events**: emitted every 250 scanned entries and once at completion, tagged with `client_scan_id`. Event name `scan-progress`.
-   verify: `grep -n "entries_scanned % 250" src-tauri/src/lib.rs`
-7. **Hidden math**: `hidden_bytes = volume.used_bytes.saturating_sub(full_root.size)`. Never negative.
-8. **Pruning preserves size**: `prune_for_display` truncates `children` at `depth >= max_display_depth` but `size` is unchanged (aggregated total survives).
-   verify: `grep -n "fn prune_for_display" src-tauri/src/lib.rs`
+   verify: `grep -n "entries_scanned % 250" src-tauri/src/*.rs`
+7. **Hidden math**: Only whole-volume scans return `hiddenBytes`: used volume bytes minus unique allocated file bytes, saturating at zero. This is an estimate; folder scans return `null`.
+8. **Bounded retention preserves size**: `scan_path` traverses descendants for totals and analytics but retains children only below the display-depth limit. `prune_for_display` remains a test helper.
+   verify: `grep -n "fn prune_for_display" src-tauri/src/*.rs`
 
 ### Execution
 
@@ -84,7 +84,7 @@ Consequences:
 - **Different roots**: scan concurrently (separate keys, same generation).
 - `cancel_scan()` cancels *everything* and clears `active_scans`.
 
-verify: `grep -n "fn cancel_scan\|fn is_scan_canceled\|fn normalize_scan_key" src-tauri/src/lib.rs`
+verify: `grep -n "fn cancel_scan\|fn is_scan_canceled\|fn normalize_scan_key" src-tauri/src/*.rs`
 
 ---
 
@@ -92,16 +92,16 @@ verify: `grep -n "fn cancel_scan\|fn is_scan_canceled\|fn normalize_scan_key" sr
 
 | Command | Guard | Refuses when |
 |---------|-------|--------------|
-| `move_to_trash` | OS shell (Finder / explorer / gio) | shell returns non-zero |
-| `permanently_delete_path` | explicit checks | `path.trim().is_empty()` OR `target.parent().is_none()` (filesystem root) |
-| `reclaim_purgeable_space` | `#[cfg(target_os = "macos")]` only | no-op on non-macOS; uses `tmutil thinlocalsnapshots / 999999999999 4` |
+| `move_to_trash` | native target validation + OS shell | critical/root/home/ancestor paths, relative or parent-traversal paths, missing target, or failed OS command |
+| `permanently_delete_path` | same native target validation | same path protections as Trash |
+| `reclaim_purgeable_space` | `#[cfg(target_os = "macos")]` only | no-op on non-macOS; uses `tmutil thinlocalsnapshots <selected-volume> 999999999999 4` |
 | `preview_path` | `qlmanage -p` on macOS, else `open_path` | — |
 
 `permanently_delete_path` deletes dirs via `remove_dir_all` and files via `remove_file`; it does **not** follow symlinks (uses `symlink_metadata`).
 
-verify: `grep -n "Refusing to" src-tauri/src/lib.rs`
+verify: `grep -n "Refusing to" src-tauri/src/*.rs`
 
-> **Never** call `permanently_delete_path` with `/` — it is a hard refuse, not a best-effort guard. Critical-path protection for user data lives in the frontend Collector (`collectorRisks` in `src/utils.ts`), not here.
+> **Never** call `permanently_delete_path` with `/` — it is a hard refuse, not a best-effort guard. The frontend Collector provides early risk feedback; the Rust backend independently validates every cleanup target.
 
 ---
 
@@ -111,7 +111,7 @@ verify: `grep -n "Refusing to" src-tauri/src/lib.rs`
 - `volume_info_for_path`: parses `df -kP` (columns 2–4 = total/used/avail KB; column 6 = mount). `availableIncludingPurgeableBytes = avail*1024 + purgeable`.
 - `get_purgeable_space_for_path`: primary `diskutil info -plist` (parse `<integer>` after `Purgeable`), fallback `diskutil info` plain text; returns `Ok(None)` on non-macOS or unparseable output. **Never panics** on malformed output — both parsers are tested.
 
-verify: `grep -n "fn volume_info_for_path\|fn get_purgeable_space_for_path\|parse_purgeable_bytes" src-tauri/src/lib.rs`
+verify: `grep -n "fn volume_info_for_path\|fn get_purgeable_space_for_path\|parse_purgeable_bytes" src-tauri/src/*.rs`
 
 ---
 
@@ -130,3 +130,5 @@ verify: `grep -n "fn volume_info_for_path\|fn get_purgeable_space_for_path\|pars
 ## 8. Next Step
 
 Add a behavioral spec under `specs/verifications/features/` when changing any invariant in §3. Run `cargo test --manifest-path src-tauri/Cargo.toml` after edits.
+
+Logical tree/file sizes count each directory entry. Unix `allocatedBytes` sums `blocks * 512` once per device/inode and reports repeated aliases in `hardLinkDuplicates`. Non-Unix platforms return `null` for allocated bytes. Shared APFS blocks, compression, and snapshots limit interpretation.

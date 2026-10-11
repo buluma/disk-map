@@ -584,3 +584,48 @@ button:disabled {
     flex-wrap: wrap;
   }
 }
+
+.sunburst-segment:focus-visible { stroke: #fff; stroke-width: 3; outline: none; }
+.session-row button[aria-pressed="true"] { font-weight: 700; text-decoration: underline; }
+.sunburst-tooltip { overflow-wrap: anywhere; }
+
+.terminal-panel {
+  margin: 12px 0;
+  border: 1px solid var(--border, #3a3a3a);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.terminal-panel.root {
+  border-color: #c74646;
+}
+
+.terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+}
+
+.terminal-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+
+.root-badge {
+  background: #c74646;
+  color: #fff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.75em;
+}
+
+.terminal-body {
+  height: 320px;
+  padding: 4px;
+  background: #000;
+}

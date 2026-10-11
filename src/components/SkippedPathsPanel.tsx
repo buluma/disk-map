@@ -13,10 +13,11 @@ export function SkippedPathsPanel({ paths }: { paths: SkippedPath[] }) {
           {open ? "Collapse" : `Expand (${paths.length})`}
         </button>
       </div>
+      <p className="scan-status">Showing up to 100 skipped entries: {paths.filter((entry) => entry.reason === "Excluded").length} excluded by your patterns, {paths.filter((entry) => entry.reason !== "Excluded").length} unreadable or failed.</p>
       {open && (
         <div className="summary-list">
-          {paths.map((entry) => (
-            <div className="summary-row" key={`${entry.reason}-${entry.path}`}>
+          {paths.map((entry, index) => (
+            <div className="summary-row" key={`${entry.reason}-${entry.path}-${index}`}>
               <span className="type-pill file">SKIP</span>
               <span className="summary-name" title={entry.path}>
                 {entry.path}

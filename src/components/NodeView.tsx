@@ -33,6 +33,7 @@ export function NodeView({
   onPreview,
   onOpen,
   onCollect,
+  onTerminal,
 }: {
   node: DiskNode;
   level?: number;
@@ -42,6 +43,7 @@ export function NodeView({
   onPreview: (path: string) => Promise<void>;
   onOpen: (path: string) => Promise<void>;
   onCollect: (node: DiskNode) => void;
+  onTerminal: (path: string, elevated: boolean) => void;
 }) {
   let [open, setOpen] = useState(level < 1);
   let hasChildren = node.children.length > 0;
@@ -52,7 +54,14 @@ export function NodeView({
         <button
           className="toggle"
           onClick={() => setOpen(!open)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+              event.preventDefault();
+              setOpen(event.key === "ArrowRight");
+            }
+          }}
           disabled={!hasChildren}
+          aria-expanded={hasChildren ? open : undefined}
           aria-label={open ? "Collapse node" : "Expand node"}
         >
           {hasChildren ? (open ? "−" : "+") : "•"}
@@ -80,6 +89,16 @@ export function NodeView({
         <button className="action-btn" onClick={() => onOpen(node.path)} title={`Open ${node.path}`}>
           Open
         </button>
+        {node.is_dir && (
+          <>
+            <button className="action-btn" onClick={() => onTerminal(node.path, false)} title={`Open terminal in ${node.path}`}>
+              Terminal
+            </button>
+            <button className="action-btn danger" onClick={() => onTerminal(node.path, true)} title={`Open root terminal in ${node.path}`}>
+              Root
+            </button>
+          </>
+        )}
         <button className="action-btn danger" onClick={() => onCollect(node)} title={`Collect ${node.path}`}>
           Collect
         </button>
@@ -97,6 +116,7 @@ export function NodeView({
             onPreview={onPreview}
             onOpen={onOpen}
             onCollect={onCollect}
+            onTerminal={onTerminal}
           />
         ))}
     </div>
