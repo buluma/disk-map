@@ -24,6 +24,15 @@ pub struct TerminalState {
     sessions: Mutex<HashMap<u64, Session>>,
 }
 
+impl TerminalState {
+    /// Dropping a session kills its shell, so app exit never leaves orphans.
+    pub fn kill_all(&self) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.clear();
+        }
+    }
+}
+
 /// The folder becomes the PTY cwd, never part of a shell string, so odd
 /// filenames cannot inject commands.
 pub(super) fn validated_terminal_cwd(path: &str) -> Result<PathBuf, String> {
@@ -284,5 +293,30 @@ mod tests {
         }
         child.wait().unwrap();
         assert!(output.contains(dir.to_str().unwrap()), "got: {output}");
+    }
+
+    #[test]
+    fn kill_all_clears_and_kills_sessions() {
+        let pair = native_pty_system().openpty(pty_size(24, 80)).unwrap();
+        let mut command = CommandBuilder::new("/bin/sleep");
+        command.arg("30");
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut killer = child.clone_killer();
+        let writer = pair.master.take_writer().unwrap();
+        let state = TerminalState::default();
+        state.sessions.lock().unwrap().insert(
+            1,
+            Session {
+                master: pair.master,
+                writer,
+                child,
+            },
+        );
+        state.kill_all();
+        assert!(state.sessions.lock().unwrap().is_empty());
+        // Already killed by Drop: a second kill must report the process gone.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(killer.kill().is_err());
     }
 }

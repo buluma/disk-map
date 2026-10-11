@@ -11,10 +11,14 @@ import { CollectorDryRunModal } from "./components/CollectorDryRunModal";
 import { SkippedPathsPanel } from "./components/SkippedPathsPanel";
 import { ScanSessionsPanel } from "./components/ScanSessionsPanel";
 import { SunburstMap } from "./components/SunburstMap";
-import { TerminalPanel } from "./components/TerminalPanel";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import "./App.css";
+
+// xterm is heavy and only needed once a terminal is opened.
+let TerminalPanel = lazy(() =>
+  import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })),
+);
 
 export default function App() {
   let scan = useScanSessions();
@@ -261,12 +265,14 @@ export default function App() {
       )}
 
       {terminal && (
-        <TerminalPanel
-          path={terminal.path}
-          elevated={terminal.elevated}
-          onClose={() => setTerminal(null)}
-          onError={scan.setError}
-        />
+        <Suspense fallback={<p role="status">Loading terminal…</p>}>
+          <TerminalPanel
+            path={terminal.path}
+            elevated={terminal.elevated}
+            onClose={() => setTerminal(null)}
+            onError={scan.setError}
+          />
+        </Suspense>
       )}
 
       {scan.currentRoot && !scan.filteredTree && (

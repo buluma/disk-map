@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
+use tauri::Manager;
 use tauri::State;
 
 #[derive(Clone, Serialize)]
@@ -322,8 +323,13 @@ pub fn run() {
             terminal::terminal_resize,
             terminal::terminal_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<terminal::TerminalState>().kill_all();
+            }
+        });
 }
 
 #[cfg(test)]
