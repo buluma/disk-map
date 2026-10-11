@@ -11,7 +11,14 @@ import { CollectorDryRunModal } from "./components/CollectorDryRunModal";
 import { SkippedPathsPanel } from "./components/SkippedPathsPanel";
 import { ScanSessionsPanel } from "./components/ScanSessionsPanel";
 import { SunburstMap } from "./components/SunburstMap";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { lazy, Suspense, useState } from "react";
 import "./App.css";
+
+// xterm is heavy and only needed once a terminal is opened.
+let TerminalPanel = lazy(() =>
+  import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })),
+);
 
 export default function App() {
   let scan = useScanSessions();
@@ -21,6 +28,18 @@ export default function App() {
     setError: scan.setError,
   });
   let pending = collector.pendingCollectorAction;
+  let [terminal, setTerminal] = useState<{ path: string; elevated: boolean } | null>(null);
+
+  async function openTerminal(path: string, elevated: boolean) {
+    if (elevated) {
+      let confirmed = await ask(
+        `Open a root shell in ${path}? Deletes there bypass the Trash and cannot be undone.`,
+        { title: "Root terminal", kind: "warning" },
+      );
+      if (!confirmed) return;
+    }
+    setTerminal({ path, elevated });
+  }
 
   return (
     <main className="app">
@@ -237,11 +256,23 @@ export default function App() {
                   onPreview={scan.previewPath}
                   onOpen={scan.openPath}
                   onCollect={collector.collectNode}
+                  onTerminal={openTerminal}
                 />
               </section>
             )}
           </section>
         </>
+      )}
+
+      {terminal && (
+        <Suspense fallback={<p role="status">Loading terminal…</p>}>
+          <TerminalPanel
+            path={terminal.path}
+            elevated={terminal.elevated}
+            onClose={() => setTerminal(null)}
+            onError={scan.setError}
+          />
+        </Suspense>
       )}
 
       {scan.currentRoot && !scan.filteredTree && (

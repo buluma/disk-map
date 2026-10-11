@@ -1,5 +1,6 @@
 mod actions;
 mod scanner;
+mod terminal;
 mod volumes;
 use scanner::*;
 use volumes::*;
@@ -14,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
+use tauri::Manager;
 use tauri::State;
 
 #[derive(Clone, Serialize)]
@@ -298,6 +300,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(terminal::TerminalState::default())
         .manage(AppState {
             next_scan_id: Arc::new(AtomicU64::new(0)),
             active_scans: Arc::new(Mutex::new(HashMap::new())),
@@ -314,10 +317,19 @@ pub fn run() {
             actions::permanently_delete_path,
             volumes::list_volumes,
             volumes::get_purgeable_space,
-            volumes::reclaim_purgeable_space
+            volumes::reclaim_purgeable_space,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<terminal::TerminalState>().kill_all();
+            }
+        });
 }
 
 #[cfg(test)]
